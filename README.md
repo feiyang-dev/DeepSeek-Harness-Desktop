@@ -4,7 +4,7 @@
 
 [English](./README.en.md) | **简体中文**
 
-**DeepSeek Harness 官方 Web UI 的 Windows 桌面客户端** —— 自动检测环境、安装依赖、拉起服务，开箱即用。
+**DeepSeek Harness 官方 Web UI 的 Windows 桌面控制台** —— 一键安装 / 启动 / 停止 / 重启服务，插件管理与自定义安装，在线更新，开箱即用。
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Electron](https://img.shields.io/badge/Electron-31-47848F)
@@ -16,7 +16,7 @@
 
 ## 简介
 
-一个 Electron 桌面壳，内嵌官方 DeepSeek Harness Web UI。启动时让用户选择**安装模式**，自动完成环境检测、安装、服务拉起，以**百分比进度条**展示各阶段，服务就绪后自动打开主界面。
+一个 Electron 桌面壳，内嵌官方 DeepSeek Harness Web UI。启动时让用户选择**安装模式**，自动完成环境检测、安装、服务拉起，以**百分比进度条**展示各阶段。服务就绪后，WebUI 在**独立新窗口**中打开，引导页则变身为常驻**首页控制台**，实时显示「正在运行中」状态，可随时**停止运行**或**重新运行**。
 
 无需记忆命令行，无需手动启动服务——双击即用。
 
@@ -24,13 +24,62 @@
 
 ### 安装模式选择
 
-进入 App 后先让用户选择安装方式（**10 秒内未选择自动用快速启动**）：
+进入 App 后由用户**自行选择**启动模式（不再自动倒计时进入）：
 
 | 模式 | 说明 | 适合场景 |
 |---|---|---|
 | 快速启动 | `npm install -g @deepseek-ai/dsh` 自动安装 | 大多数用户，最快开始使用 |
 | 源码完整安装 | `git clone` + `pnpm install` + `pnpm run build` | 开发者，想改源码/调试 |
 | 本地修复 | 卸载全局 `@deepseek-ai/dsh`、清除残留、重新安装 | 安装损坏、版本异常、koffi 加载失败时一键修复 |
+
+### 首页控制台（引导页常驻）
+
+- **模式选择**：进入 App 后由用户**自行选择**启动模式（不再自动倒计时进入）
+- **独立 WebUI 窗口**：进入成功后，WebUI 在全新窗口中打开，首页引导窗口不再关闭
+- **运行状态**：首页实时显示「正在运行中」（运行地址 + 已运行时长），可一键**停止运行**或**重新运行**（用上次所选模式重新拉起服务）
+- 服务异常退出时，首页自动回到错误提示界面，可重试 / 本地修复 / 退出
+
+### 插件管理（独立页面 + 自定义安装）
+
+首页提供「安装插件」入口，进入独立插件管理页：
+
+- **推荐插件**：一键安装 / 卸载官方系列插件，当前提供两个（安装过程显示在「自定义安装」卡片的命令行日志中，完成后点「立即重启服务」即可生效）：
+  - **[用量与消耗插件（dsh-usage）](https://github.com/feiyang-dev/dsh-usage-plugin)**：记录每次调用的 token 用量与缓存命中、按 DeepSeek 峰谷/基础价格计费、用量日历热力图、余额查询、CSV/JSON/PNG 导出
+  - **[数据保险箱（dsh-vault）](https://github.com/feiyang-dev/deepseekharnessdesktop-vault)**：自动备份 `~/.dsh` 数据到 `~/.dsh-backups`、清空检测、一键恢复，保护聊天记录与工作区数据
+- **自定义安装**：填写任意 npm 包名或安装命令（如 `@scope/plugin-name` 或 `npm install @scope/plugin-name`），客户端自动执行安装并注册到运行环境；命令行日志在「自定义安装」卡片内实时展示
+- **已安装列表**：展示全部已安装插件（版本 / 注册状态），可逐个卸载
+- 安装逻辑与官方 `dsh plugin add` 等价（npm 装入 profile + 注册 `dsh.profile.bundles`），**重新运行服务后生效**
+
+> 不喜欢桌面端也可以直接在命令行安装，效果等价：
+> ```bash
+> dsh plugin --profile web add @feiyang666/deepseekharnessdesktop
+> dsh plugin --profile web add @feiyang666/deepseekharnessdesktop-vault
+> ```
+
+### 设置与在线更新
+
+引导页提供「设置」入口，进入独立设置页面：
+
+- **关于**：应用版本、更新日志、更新服务地址
+- **通知**：新版本系统通知开关（持久化保存）
+- **开发者选项**：「开启开发者选项模式」开关（持久化保存，对下次启动生效）
+- **检查更新**：进入设置页自动检查，支持手动检查、一键下载并安装，下载过程显示实时进度，完成后校验 SHA256
+
+更新服务默认地址 `https://api.deepseekharness.desktop.cwj666.top`，可通过环境变量 `DSH_UPDATE_API` 覆盖。
+
+### 开发者选项模式（前端开发专用）
+
+开启「开发者选项模式」后，选择「快速启动」时不再走单进程 npx，而是把启动**分离为两个进程**，便于迭代 DSH 浏览器端：
+
+| 进程 | 说明 |
+|---|---|
+| 服务端后端 | 源码仓库方式启动 `dsh web`（`%APPDATA%/dsh-desktop/deepseek-harness`），提供 API 并托管前端，地址不变 |
+| 浏览器端热更 watcher | `pnpm run dev:web`，监听全部 `dsh.client` 插件源码，改动后自动重建 bundle，浏览器免刷新热更 |
+
+- 需先完成一次「源码完整安装」构建好源码仓库（未就绪时启动会给出引导提示）
+- WebUI 窗口仍打开 `http://127.0.0.1:3080`；首页控制台显示「开发者模式」标识，停止/重新运行会同时管理两个进程
+- 选择「源码完整安装」时若已开启该模式，安装完成后也会自动附带启动热更 watcher
+- 关闭开关后回到原来的单进程 npx 快速启动
 
 ### 人性化启动引导
 
@@ -93,9 +142,9 @@ node pack.js
 
 ```
 dsh-desktop/
-├── main.js          # 主进程（模式选择/进度状态机/安装/启动/窗口/托盘/清理）
-├── preload.js       # 安全桥接（模式/进度/日志/状态 IPC）
-├── boot/            # 启动引导页（模式选择 + 进度条 + 日志面板）
+├── main.js          # 主进程（模式选择/进度状态机/安装/启动/窗口/托盘/清理/更新服务）
+├── preload.js       # 安全桥接（模式/进度/日志/状态/设置/更新 IPC）
+├── boot/            # 启动引导页（模式选择 + 设置页 + 进度条 + 日志面板）
 │   ├── boot.html
 │   ├── boot.css
 │   └── boot.js
@@ -108,15 +157,21 @@ dsh-desktop/
 ## 启动流程（状态机）
 
 ```
-[模式选择] --10秒超时自动选快速-->
-  快速：检测 node → 已有 dsh? → 安装(@deepseek-ai/dsh) → 启动服务
-  源码：检测 git/pnpm → clone → pnpm install --ignore-scripts → pnpm run build → 启动服务
-  修复：停止服务 → 卸载全局 dsh → 清除残留 → 重新安装 → 启动服务
+[首页：模式选择] --用户自行选择（无自动进入）-->
+   快速：检测 node → npx 下载依赖 → 启动服务
+   快速+开发者选项：检测 node → 检查源码仓库 → 启动服务端后端 + 浏览器端热更 watcher（双进程）
+   源码：检测 git/pnpm → clone → pnpm install --ignore-scripts → pnpm run build → 启动服务（开启开发者选项时附带启动热更 watcher）
+   修复：停止服务 → 强力清除本地数据 → 官方快速版启动
         │
         ▼
-[端口探测] 已有服务在 3080？ → 直接复用（修复模式跳过）
 [进度] 8%检测环境 → 25-90%安装/构建/修复 → 60-95%启动服务 → 100%就绪
-[打开主窗口] http://127.0.0.1:3080
+        │
+        ▼
+[首页：正在运行中] --独立新窗口打开 WebUI（http://127.0.0.1:3080）-->
+   [停止运行] → 首页显示"已停止"，可重新运行或改选模式
+   [重新运行] → 用上次所选模式重新走启动流程
+[插件管理页] 首页「安装插件」→ 推荐插件一键安装 / 自定义包名安装 / 已安装列表卸载
+[设置页] 首页「设置」→ 关于 / 通知 / 开发者选项 / 检查更新（自动检查 + 下载安装）
 ```
 
 关键实现：
@@ -139,6 +194,12 @@ A: 客户端会优先复用已运行的 dsh web 服务；也可用 `npm start --
 **Q: 想调试 / 改源码？**
 A: 选择"源码完整安装"模式，源码会 clone 到 `%APPDATA%/dsh-desktop/deepseek-harness`，构建后自动启动。
 
+**Q: 开发者选项模式怎么用？**
+A: 设置页开启「开发者选项模式」（需先完成一次"源码完整安装"），然后选择"快速启动"。客户端会分离运行「服务端后端」与「浏览器端热更 watcher（pnpm dev:web）」两个进程，浏览器仍打开 3080；修改 `dsh.client` 插件源码会自动重建并免刷新热更。
+
+**Q: 开发者选项模式下"本地修复"还可用吗？**
+A: 可用。"本地修复"始终走官方快速版 npx 单进程启动，不受开发者选项影响（修复时会同时清理残留的 watcher 进程）。
+
 ## 技术栈
 
 - [Electron](https://www.electronjs.org/) 31 — 桌面壳
@@ -151,7 +212,11 @@ A: 选择"源码完整安装"模式，源码会 clone 到 `%APPDATA%/dsh-desktop
 
 ## 相关项目
 
-- [DeepSeek-Harness](https://github.com/deepseek-ai/DeepSeek-Harness) — 官方 CLI / Web 服务
+| 项目 | 说明 | 安装方式 |
+| --- | --- | --- |
+| [用量与消耗插件（dsh-usage）](https://github.com/feiyang-dev/dsh-usage-plugin) | 每次调用的 token 用量/缓存命中统计、峰谷计费、余额查询、CSV/JSON/PNG 导出 | 桌面端推荐插件一键安装，或 `dsh plugin add @feiyang666/deepseekharnessdesktop` |
+| [数据保险箱（dsh-vault）](https://github.com/feiyang-dev/deepseekharnessdesktop-vault) | 自动备份 / 清空检测 / 一键恢复，保护聊天记录与工作区数据 | 桌面端推荐插件一键安装，或 `dsh plugin add @feiyang666/deepseekharnessdesktop-vault` |
+| [DeepSeek-Harness](https://github.com/deepseek-ai/DeepSeek-Harness) | 官方 CLI / Web 服务 | — |
 
 ---
 

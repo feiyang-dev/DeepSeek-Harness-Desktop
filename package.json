@@ -1,7 +1,7 @@
 {
   "name": "dsh-desktop",
-  "version": "1.0.0",
-  "description": "DeepSeek Harness 桌面客户端 —— 自动检测环境、拉起 dsh web 服务、内嵌官方 Web UI",
+  "version": "1.2.0",
+  "description": "DeepSeek Harness 桌面版 —— 一键安装/启动/停止/重启 dsh web 服务，插件管理与自定义安装，在线更新，系统托盘常驻",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -25,6 +25,7 @@
     "files": [
       "main.js",
       "preload.js",
+      "plugin-manager.js",
       "boot/**/*",
       "assets/**/*",
       "CHANGELOG.md"

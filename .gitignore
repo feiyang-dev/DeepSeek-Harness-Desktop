@@ -22,3 +22,6 @@ desktop.ini
 
 # 运行时临时文件
 *.tmp
+
+# 插件运行数据
+dsh-usage/

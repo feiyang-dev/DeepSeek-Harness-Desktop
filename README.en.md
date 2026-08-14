@@ -38,6 +38,23 @@ Choose an install method when the app launches (**auto-selects Quick Start if no
 - **Expandable command-line log panel**: one click to view real output (install/build process), auto-expands on errors
 - Stage text adapts intelligently: detecting environment → downloading → extracting → installing → building → starting
 
+### Plugin Management (Built-in)
+
+The home screen has an "Install Plugins" entry that opens a dedicated plugin page:
+
+- **Recommended plugins** — one-click install/uninstall of the official plugin series:
+  - **[Usage & Cost Tracker (dsh-usage)](https://github.com/feiyang-dev/dsh-usage-plugin)**: per-call token/cache-hit stats, peak/off-peak billing, a usage calendar heatmap, balance query, and CSV/JSON/PNG export.
+  - **[Data Vault (dsh-vault)](https://github.com/feiyang-dev/deepseekharnessdesktop-vault)**: auto-backups `~/.dsh` to `~/.dsh-backups`, detects data wipe, and restores chat history and workspace data with one click.
+- **Custom install** — enter any npm package name or install command; the client installs it and registers it in the runtime profile. Command-line output is shown live in the custom-install card.
+- **Installed list** — shows all installed plugins (version / registration status) with per-plugin uninstall.
+- The install logic is equivalent to the official `dsh plugin add` (npm into profile + register `dsh.profile.bundles`); **restart the service to take effect**.
+
+> Prefer the command line? The equivalent commands work too:
+> ```bash
+> dsh plugin --profile web add @feiyang666/deepseekharnessdesktop
+> dsh plugin --profile web add @feiyang666/deepseekharnessdesktop-vault
+> ```
+
 ### Other Features
 
 - **No terminal windows**: all subprocesses run directly via `node`, no console popups
@@ -151,7 +168,11 @@ A: Choose "Full Source Build" mode. The source is cloned to `%APPDATA%/dsh-deskt
 
 ## Related Projects
 
-- [DeepSeek-Harness](https://github.com/deepseek-ai/DeepSeek-Harness) — official CLI / Web service
+| Project | Description | Installation |
+| --- | --- | --- |
+| [Usage & Cost Tracker (dsh-usage)](https://github.com/feiyang-dev/dsh-usage-plugin) | Per-call token/cache-hit stats, peak/off-peak billing, balance query, CSV/JSON/PNG export | One-click from the desktop app's recommended plugins, or `dsh plugin add @feiyang666/deepseekharnessdesktop` |
+| [Data Vault (dsh-vault)](https://github.com/feiyang-dev/deepseekharnessdesktop-vault) | Auto backup / wipe detection / one-click restore — protects chat history and workspace data | One-click from the desktop app's recommended plugins, or `dsh plugin add @feiyang666/deepseekharnessdesktop-vault` |
+| [DeepSeek-Harness](https://github.com/deepseek-ai/DeepSeek-Harness) | Official CLI / Web service | — |
 
 ---
 
