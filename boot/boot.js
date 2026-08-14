@@ -85,6 +85,8 @@ const setTagline = document.getElementById('setTagline');
 const setChangelog = document.getElementById('setChangelog');
 const setUpdateBase = document.getElementById('setUpdateBase');
 const setNotifyToggle = document.getElementById('setNotifyToggle');
+const themeDarkBtn = document.getElementById('themeDarkBtn');
+const themeLightBtn = document.getElementById('themeLightBtn');
 const setDevModeToggle = document.getElementById('setDevModeToggle');
 const setUpdateStatus = document.getElementById('setUpdateStatus');
 const setUpdateHint = document.getElementById('setUpdateHint');
@@ -591,6 +593,39 @@ function closeSettings() {
 settingsEntry.addEventListener('click', openSettings);
 settingsBack.addEventListener('click', closeSettings);
 
+// ============ 界面主题（深色 / 浅色） ============
+// 应用主题：在 <html> 上设置 data-theme，CSS 变量据此切换
+function applyTheme(theme) {
+  const t = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  syncThemeButtons(t);
+}
+
+// 同步主题切换按钮高亮状态
+function syncThemeButtons(theme) {
+  const t = theme === 'light' ? 'light' : 'dark';
+  if (themeDarkBtn) themeDarkBtn.classList.toggle('active', t === 'dark');
+  if (themeLightBtn) themeLightBtn.classList.toggle('active', t === 'light');
+}
+
+// 主题切换按钮：点击即切换并持久化
+function setupThemeControls() {
+  if (themeDarkBtn) {
+    themeDarkBtn.addEventListener('click', () => setTheme('dark'));
+  }
+  if (themeLightBtn) {
+    themeLightBtn.addEventListener('click', () => setTheme('light'));
+  }
+}
+
+function setTheme(theme) {
+  const t = theme === 'light' ? 'light' : 'dark';
+  applyTheme(t);
+  if (window.dsh && window.dsh.setTheme) {
+    window.dsh.setTheme(t);
+  }
+}
+
 function applyAppName(name, tagline) {
   const n = name || 'DeepSeek Harness 桌面版';
   const t = tagline || 'DeepSeek Harness 官方 Web UI 桌面客户端';
@@ -610,6 +645,9 @@ function loadSettings() {
       setVersion.textContent = 'v' + cfg.version;
       setNotifyToggle.checked = !!cfg.notifications;
       setDevModeToggle.checked = !!cfg.developerMode;
+      if (cfg.theme) {
+        applyTheme(cfg.theme);
+      }
       if (cfg.updateApiBase) {
         setUpdateBase.textContent = '更新服务：' + cfg.updateApiBase;
       }
@@ -795,6 +833,12 @@ if (!window.dsh) {
   btnOpenNode.hidden = true;
   btnRetry.hidden = true;
 } else {
+  // 主题：立即应用预加载脚本传入的主题（同步、避免首帧闪色）
+  if (window.dsh.theme) {
+    applyTheme(window.dsh.theme);
+  }
+  setupThemeControls();
+
   // 阶段切换（mode / detect / install / start / running / stopped / error）
   window.dsh.onPhase(({ phase, service }) => {
     if (phase === 'mode') {

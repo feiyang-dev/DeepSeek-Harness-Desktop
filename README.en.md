@@ -57,6 +57,7 @@ The home screen has an "Install Plugins" entry that opens a dedicated plugin pag
 
 ### Other Features
 
+- **Dark / light theme**: switch between dark and light UI from Settings → Appearance; applied instantly and saved persistently
 - **No terminal windows**: all subprocesses run directly via `node`, no console popups
 - **Automatic environment detection**: guides you when Node.js/git/pnpm are missing (download button for Node, download hint for git, auto-install for pnpm)
 - **Automatic service startup**: reuses an existing service on port 3080 when available; otherwise starts `dsh web`

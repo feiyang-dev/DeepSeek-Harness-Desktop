@@ -13,11 +13,54 @@
   --green: #3fb950;
   --red: #f85149;
   --yellow: #d29922;
+
+  /* 主题扩展变量（深色默认） */
+  --btn-bg: #21262d;            /* 按钮 / 次级控件背景 */
+  --btn-bg-hover: #30363d;      /* 按钮 hover */
+  --field-bg: #0d1117;          /* 输入框 / 列表项 / 代码块背景 */
+  --log-bg: #010409;            /* 命令行日志面板背景 */
+  --log-text: #c9d1d9;          /* 命令行日志文字 */
+  --grad-top: #1c2a45;          /* 页面顶部渐变 */
+  --placeholder: #484f58;
+  --err-text: #f0857e;
+  --logo-bg: #f0f4fa;           /* Logo 瓷块背景（两主题一致，适配黑色 logo） */
+  --primary: #238636;
+  --primary-hover: #2ea043;
+  --danger: #7d1f1f;
+  --danger-hover: #a0302c;
+  --danger-border: #b0413e;
+}
+
+/* ============ 浅色主题 ============ */
+html[data-theme="light"] {
+  --bg: #f6f8fa;
+  --panel: #ffffff;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --muted: #656d76;
+  --accent: #0969da;
+  --green: #1a7f37;
+  --red: #cf222e;
+  --yellow: #9a6700;
+
+  --btn-bg: #eef1f4;
+  --btn-bg-hover: #dfe3e8;
+  --field-bg: #f6f8fa;
+  --log-bg: #f6f8fa;
+  --log-text: #1f2328;
+  --grad-top: #d6e1f2;
+  --placeholder: #8c959f;
+  --err-text: #cf222e;
+  --primary: #1f883d;
+  --primary-hover: #2da44e;
+  --danger: #cf222e;
+  --danger-hover: #a40e26;
+  --danger-border: #cf222e;
 }
 
 html, body {
   height: 100%;
-  background: radial-gradient(1200px 600px at 50% -10%, #1c2a45 0%, var(--bg) 60%);
+  background: radial-gradient(1200px 600px at 50% -10%, var(--grad-top) 0%, var(--bg) 60%);
   color: var(--text);
   font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
 }
@@ -41,7 +84,7 @@ html, body {
 .logo-tile {
   width: 60px; height: 60px;
   border-radius: 14px;
-  background: #f0f4fa;
+  background: var(--logo-bg);
   display: flex; align-items: center; justify-content: center;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
   flex-shrink: 0;
@@ -82,7 +125,7 @@ html, body {
 
 .mode-badge {
   position: absolute; top: -10px; right: 14px;
-  background: linear-gradient(135deg, #1f6feb, #6e40c9);
+  background: linear-gradient(135deg, #1f6feb, #58a6ff);
   color: #fff; font-size: 11px; font-weight: 700;
   padding: 3px 12px; border-radius: 20px;
 }
@@ -102,7 +145,7 @@ html, body {
 .mode-btn {
   text-align: center; padding: 9px 0;
   border-radius: 8px; font-size: 13px; font-weight: 600;
-  background: #21262d; border: 1px solid var(--border);
+  background: var(--btn-bg); border: 1px solid var(--border);
   transition: background 0.15s;
 }
 .mode-card:hover .mode-btn { background: #1f6feb; border-color: #1f6feb; }
@@ -139,7 +182,7 @@ html, body {
 }
 .percent {
   font-size: 56px; font-weight: 700; font-variant-numeric: tabular-nums;
-  background: linear-gradient(90deg, #58a6ff, #a371f7);
+  background: linear-gradient(90deg, #58a6ff, #79c0ff);
   -webkit-background-clip: text; background-clip: text;
   -webkit-text-fill-color: transparent;
   line-height: 1.1;
@@ -147,7 +190,7 @@ html, body {
 .bar { width: 100%; height: 10px; border-radius: 6px; background: var(--border); overflow: hidden; }
 .bar-fill {
   height: 100%; width: 0%;
-  background: linear-gradient(90deg, #1f6feb, #6e40c9);
+  background: linear-gradient(90deg, #1f6feb, #58a6ff);
   transition: width 0.5s ease;
 }
 .stage-text { font-size: 15px; color: var(--text); text-align: center; min-height: 22px; }
@@ -188,7 +231,7 @@ html, body {
   width: min(720px, 94vw);
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: #010409;
+  background: var(--log-bg);
   overflow: hidden;
 }
 .log-header {
@@ -213,7 +256,7 @@ html, body {
   font-size: 11.5px; line-height: 1.6;
   border-top: 1px solid var(--border);
 }
-.log-line { white-space: pre-wrap; word-break: break-all; color: #c9d1d9; }
+.log-line { white-space: pre-wrap; word-break: break-all; color: var(--log-text); }
 .log-line.err { color: var(--red); }
 .log-hint { color: var(--muted); font-style: italic; }
 
@@ -226,7 +269,7 @@ html, body {
   background: rgba(248, 81, 73, 0.1);
   border: 1px solid rgba(248, 81, 73, 0.35);
   border-radius: 10px;
-  color: #f0857e;
+  color: var(--err-text);
   font-size: 12.5px;
   line-height: 1.6;
   white-space: pre-line;
@@ -244,15 +287,15 @@ html, body {
 .footer button {
   padding: 9px 22px; border-radius: 8px;
   border: 1px solid var(--border);
-  background: #21262d; color: var(--text);
+  background: var(--btn-bg); color: var(--text);
   font-size: 13px; cursor: pointer;
   transition: background 0.15s;
 }
-.footer button:hover { background: #30363d; }
-.footer button.primary { background: #238636; border-color: #2ea043; }
-.footer button.primary:hover { background: #2ea043; }
-.footer button.repair { background: #7d1f1f; border-color: #b0413e; }
-.footer button.repair:hover { background: #a0302c; }
+.footer button:hover { background: var(--btn-bg-hover); }
+.footer button.primary { background: var(--primary); border-color: var(--primary-hover); }
+.footer button.primary:hover { background: var(--primary-hover); }
+.footer button.repair { background: var(--danger); border-color: var(--danger-border); }
+.footer button.repair:hover { background: var(--danger-hover); }
 
 /* ============ 设置入口按钮 ============ */
 .settings-entry {
@@ -274,7 +317,7 @@ html, body {
 .settings-entry-icon svg { width: 15px; height: 15px; display: block; }
 .settings-entry:hover {
   border-color: var(--accent);
-  background: #21262d;
+  background: var(--btn-bg);
   box-shadow: 0 0 0 3px rgba(77, 159, 255, 0.15);
   transform: translateY(-1px);
 }
@@ -314,7 +357,7 @@ html, body {
 .about-logo {
   width: 64px; height: 64px;
   border-radius: 16px;
-  background: #f0f4fa;
+  background: var(--logo-bg);
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
@@ -399,11 +442,11 @@ html, body {
 .footer-btn {
   padding: 8px 26px; border-radius: 8px;
   border: 1px solid var(--border);
-  background: #21262d; color: var(--text);
+  background: var(--btn-bg); color: var(--text);
   font-size: 13px; cursor: pointer;
   transition: background 0.15s;
 }
-.footer-btn:hover { background: #30363d; }
+.footer-btn:hover { background: var(--btn-bg-hover); }
 
 /* ============ 设置页面 ============ */
 .settings-app {
@@ -501,12 +544,30 @@ html, body {
 .settings-switch input:checked + .slider { background: var(--green); }
 .settings-switch input:checked + .slider::before { transform: translateX(18px); }
 
+/* 外观：主题切换按钮组 */
+.theme-toggle {
+  display: inline-flex; gap: 8px;
+  flex-shrink: 0;
+}
+.theme-toggle .settings-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+}
+.theme-toggle .theme-icon { width: 14px; height: 14px; line-height: 1; }
+.theme-toggle .theme-icon svg { width: 14px; height: 14px; display: block; }
+.theme-toggle .settings-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.theme-toggle .settings-btn.active:hover { background: var(--accent); }
+
 /* 关于 */
 .about-hero-mini { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
 .about-logo-tile {
   width: 52px; height: 52px;
   border-radius: 14px;
-  background: #f0f4fa;
+  background: var(--logo-bg);
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
@@ -521,7 +582,7 @@ html, body {
   color: var(--muted); line-height: 1.7;
   font-size: 12px;
   max-height: 180px; overflow-y: auto;
-  background: #0d1117;
+  background: var(--field-bg);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px 14px;
@@ -534,15 +595,15 @@ html, body {
   padding: 8px 18px;
   border-radius: 18px;
   border: 1px solid var(--border);
-  background: #21262d; color: var(--text);
+  background: var(--btn-bg); color: var(--text);
   font-size: 13px; font-weight: 600;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, opacity 0.15s;
   flex-shrink: 0;
 }
-.settings-btn:hover:not(:disabled) { background: #30363d; }
-.settings-btn.primary { background: #238636; border-color: #2ea043; }
-.settings-btn.primary:hover:not(:disabled) { background: #2ea043; }
+.settings-btn:hover:not(:disabled) { background: var(--btn-bg-hover); }
+.settings-btn.primary { background: var(--primary); border-color: var(--primary-hover); }
+.settings-btn.primary:hover:not(:disabled) { background: var(--primary-hover); }
 .settings-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .update-info {
@@ -569,7 +630,7 @@ html, body {
 }
 .update-bar-fill {
   height: 100%; width: 0%;
-  background: linear-gradient(90deg, #1f6feb, #6e40c9);
+  background: linear-gradient(90deg, #1f6feb, #58a6ff);
   transition: width 0.3s ease;
 }
 .update-progress-text {
@@ -587,7 +648,7 @@ html, body {
 .update-modal-logo {
   width: 52px; height: 52px;
   border-radius: 14px;
-  background: #f0f4fa;
+  background: var(--logo-bg);
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
@@ -602,7 +663,7 @@ html, body {
   font-size: 12.5px; color: var(--muted);
   line-height: 1.7;
   max-height: 160px; overflow-y: auto;
-  background: #0d1117;
+  background: var(--field-bg);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px 14px;
@@ -662,16 +723,16 @@ html, body {
   padding: 8px 16px;
   border-radius: 18px;
   border: 1px solid var(--border);
-  background: #21262d; color: var(--text);
+  background: var(--btn-bg); color: var(--text);
   font-size: 13px; font-weight: 600;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s;
 }
-.status-btn:hover { background: #30363d; }
-.status-btn.primary { background: #238636; border-color: #2ea043; }
-.status-btn.primary:hover { background: #2ea043; }
-.status-btn.danger { background: #7d1f1f; border-color: #b0413e; }
-.status-btn.danger:hover { background: #a0302c; }
+.status-btn:hover { background: var(--btn-bg-hover); }
+.status-btn.primary { background: var(--primary); border-color: var(--primary-hover); }
+.status-btn.primary:hover { background: var(--primary-hover); }
+.status-btn.danger { background: var(--danger); border-color: var(--danger-border); }
+.status-btn.danger:hover { background: var(--danger-hover); }
 
 /* ============ 插件管理页：自定义安装 ============ */
 .custom-install-hint {
@@ -684,7 +745,7 @@ html, body {
 .custom-input {
   flex: 1;
   min-width: 0;
-  background: #0d1117;
+  background: var(--field-bg);
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text);
@@ -694,7 +755,7 @@ html, body {
   transition: border-color 0.15s, box-shadow 0.15s;
   font-family: "Cascadia Code", Consolas, "Courier New", monospace;
 }
-.custom-input::placeholder { color: #484f58; }
+.custom-input::placeholder { color: var(--placeholder); }
 .custom-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(77, 159, 255, 0.15); }
 
 /* ============ 插件管理页：已安装列表 ============ */
@@ -707,7 +768,7 @@ html, body {
 }
 .installed-item {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  background: #0d1117;
+  background: var(--field-bg);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 14px;
@@ -813,7 +874,7 @@ html, body {
   margin-top: 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #010409;
+  background: var(--log-bg);
   overflow: hidden;
 }
 .custom-log-header {
@@ -833,6 +894,6 @@ html, body {
   font-size: 11px; line-height: 1.6;
   border-top: 1px solid var(--border);
 }
-.custom-log-body .log-line { white-space: pre-wrap; word-break: break-all; color: #c9d1d9; }
+.custom-log-body .log-line { white-space: pre-wrap; word-break: break-all; color: var(--log-text); }
 .custom-log-body .log-line.err { color: var(--red); }
 .custom-log-body .log-hint { color: var(--muted); font-style: italic; }

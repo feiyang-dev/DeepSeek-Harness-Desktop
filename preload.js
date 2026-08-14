@@ -2,7 +2,17 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// 主进程在启动时通过 additionalArguments 传入已保存的主题（'--dsh-theme=light'），
+// 渲染进程可在 DOM 渲染前同步拿到，避免浅色主题时首帧闪黑。
+const DSK_THEME = (() => {
+  const arg = (process.argv || []).find((a) => a && a.indexOf('--dsh-theme=') === 0);
+  return arg ? arg.slice('--dsh-theme='.length) : 'dark';
+})();
+
 contextBridge.exposeInMainWorld('dsh', {
+  // 启动时主进程传入的主题（'dark' | 'light'），同步可用，避免首帧闪烁
+  theme: DSK_THEME,
+
   // ---- 模式选择 ----
   selectMode: (mode) => ipcRenderer.invoke('boot:select-mode', mode),
   // 倒计时事件（已停用自动进入，保留通道兼容）
@@ -62,6 +72,8 @@ contextBridge.exposeInMainWorld('dsh', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   // 通知开关
   setNotifications: (enabled) => ipcRenderer.invoke('settings:set-notifications', enabled),
+  // 界面主题切换（'dark' | 'light'），持久化保存
+  setTheme: (theme) => ipcRenderer.invoke('settings:set-theme', theme),
   // 开发者选项模式开关（对下次启动生效）
   setDeveloperMode: (enabled) => ipcRenderer.invoke('settings:set-developer-mode', enabled),
 

@@ -1250,6 +1250,8 @@ async function restartService() {
 //  窗口 / 托盘
 // ============================================================
 function createBootWindow() {
+  // 窗口背景色跟随主题，避免切换/加载时闪白
+  const theme = loadAppConfig().theme === 'light' ? 'light' : 'dark';
   bootWindow = new BrowserWindow({
     width: 780,
     height: 620,
@@ -1259,10 +1261,12 @@ function createBootWindow() {
     autoHideMenuBar: true,
     title: APP_NAME,
     icon: appIcon(256),
+    backgroundColor: theme === 'light' ? '#f6f8fa' : '#0d1117',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      additionalArguments: [`--dsh-theme=${theme}`],
     },
   });
   bootWindow.loadFile(path.join(__dirname, 'boot', 'boot.html'));
@@ -1514,6 +1518,11 @@ function loadAppConfig() {
   }
   if (typeof appConfig.developerMode !== 'boolean') {
     appConfig.developerMode = false;
+    saveAppConfig();
+  }
+  // 界面主题：'dark' | 'light'（默认深色）
+  if (!['dark', 'light'].includes(appConfig.theme)) {
+    appConfig.theme = 'dark';
     saveAppConfig();
   }
   return appConfig;
@@ -1832,12 +1841,22 @@ ipcMain.handle('settings:get', async () => {
     changelog,
     notifications: cfg.notifications !== false,
     developerMode: cfg.developerMode === true,
+    theme: cfg.theme === 'light' ? 'light' : 'dark',
     deviceId: cfg.deviceId,
     updateApiBase: UPDATE_API_BASE,
     appId: UPDATE_APP_ID,
     appName: APP_NAME,
     appTagline: APP_TAGLINE,
   };
+});
+
+// 界面主题切换（深色 / 浅色），持久化保存
+ipcMain.handle('settings:set-theme', (e, theme) => {
+  const cfg = loadAppConfig();
+  cfg.theme = theme === 'light' ? 'light' : 'dark';
+  saveAppConfig();
+  logLine(`[设置] 界面主题已切换为${cfg.theme === 'light' ? '浅色' : '深色'}`);
+  return { ok: true, theme: cfg.theme };
 });
 
 ipcMain.handle('settings:set-notifications', (e, enabled) => {
