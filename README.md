@@ -43,7 +43,7 @@
 
 首页提供「安装插件」入口，进入独立插件管理页：
 
-- **推荐插件**：一键安装 / 卸载官方系列插件，当前提供两个（安装过程显示在「自定义安装」卡片的命令行日志中，完成后点「立即重启服务」即可生效）：
+- **推荐插件**：一键安装 / 卸载由开发者制作的插件，当前提供两个（安装过程显示在「自定义安装」卡片的命令行日志中，完成后点「立即重启服务」即可生效）：
   - **[用量与消耗插件（dsh-usage）](https://github.com/feiyang-dev/dsh-usage-plugin)**：记录每次调用的 token 用量与缓存命中、按 DeepSeek 峰谷/基础价格计费、用量日历热力图、余额查询、CSV/JSON/PNG 导出
   - **[数据保险箱（dsh-vault）](https://github.com/feiyang-dev/deepseekharnessdesktop-vault)**：自动备份 `~/.dsh` 数据到 `~/.dsh-backups`、清空检测、一键恢复，保护聊天记录与工作区数据
 - **自定义安装**：填写任意 npm 包名或安装命令（如 `@scope/plugin-name` 或 `npm install @scope/plugin-name`），客户端自动执行安装并注册到运行环境；命令行日志在「自定义安装」卡片内实时展示

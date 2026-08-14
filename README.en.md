@@ -42,7 +42,7 @@ Choose an install method when the app launches (**auto-selects Quick Start if no
 
 The home screen has an "Install Plugins" entry that opens a dedicated plugin page:
 
-- **Recommended plugins** — one-click install/uninstall of the official plugin series:
+- **Recommended plugins** — one-click install/uninstall of community-built plugins:
   - **[Usage & Cost Tracker (dsh-usage)](https://github.com/feiyang-dev/dsh-usage-plugin)**: per-call token/cache-hit stats, peak/off-peak billing, a usage calendar heatmap, balance query, and CSV/JSON/PNG export.
   - **[Data Vault (dsh-vault)](https://github.com/feiyang-dev/deepseekharnessdesktop-vault)**: auto-backups `~/.dsh` to `~/.dsh-backups`, detects data wipe, and restores chat history and workspace data with one click.
 - **Custom install** — enter any npm package name or install command; the client installs it and registers it in the runtime profile. Command-line output is shown live in the custom-install card.
