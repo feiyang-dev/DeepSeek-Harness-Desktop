@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+  <title>DeepSeek Harness 桌面版</title>
+  <link rel="stylesheet" href="boot.css" />
+</head>
+<body>
+  <!-- ============ 模式选择界面 ============ -->
+  <div class="app" id="modeScreen">
+    <div class="brand">
+      <div class="logo-tile"><img class="logo-img" src="logo-black.svg" alt="DeepSeek Harness" /></div>
+      <div class="brand-text">
+        <h1>DeepSeek Harness 桌面版</h1>
+        <p>选择安装模式开始使用</p>
+      </div>
+      <button class="about-btn" id="aboutLink" title="查看应用介绍">
+        <span class="about-btn-icon">ⓘ</span> 关于
+      </button>
+    </div>
+
+    <div class="mode-cards">
+      <div class="mode-card" id="cardQuick" tabindex="0">
+        <div class="mode-badge">推荐</div>
+        <div class="mode-title">快速启动</div>
+        <div class="mode-desc">自动下载安装 dsh，最快开始使用</div>
+        <ul class="mode-features">
+          <li>npx 方式自动安装</li>
+          <li>首次约需下载数百 MB</li>
+          <li>无需安装额外工具</li>
+        </ul>
+        <div class="mode-btn">选择快速启动</div>
+      </div>
+
+      <div class="mode-card" id="cardSource" tabindex="0">
+        <div class="mode-title">源码完整安装</div>
+        <div class="mode-desc">git clone + pnpm 构建，适合开发调试</div>
+        <ul class="mode-features">
+          <li>获取完整项目源码</li>
+          <li>需要 git 与 pnpm</li>
+          <li>安装较慢，可修改源码</li>
+        </ul>
+        <div class="mode-btn">选择源码安装</div>
+      </div>
+
+      <div class="mode-card" id="cardRepair" tabindex="0">
+        <div class="mode-title">本地修复</div>
+        <div class="mode-desc">清除全局安装并重新安装</div>
+        <ul class="mode-features">
+          <li>卸载旧版 @deepseek-ai/dsh</li>
+          <li>清理残留文件与缓存</li>
+          <li>重新安装最新版</li>
+        </ul>
+        <div class="mode-btn">选择本地修复</div>
+      </div>
+    </div>
+
+    <div class="countdown" id="countdown">
+      <div class="countdown-text">未选择将自动使用 <b>快速启动</b></div>
+      <div class="countdown-bar"><div class="countdown-fill" id="countdownFill"></div></div>
+      <div class="countdown-num" id="countdownNum">15 秒</div>
+    </div>
+  </div>
+
+  <!-- ============ 进度界面 ============ -->
+  <div class="app" id="progressScreen" hidden>
+    <div class="brand">
+      <div class="logo-tile"><img class="logo-img" src="logo-black.svg" alt="DeepSeek Harness" /></div>
+      <div class="brand-text">
+        <h1>DeepSeek Harness 桌面版</h1>
+        <p id="stageTag">正在初始化...</p>
+      </div>
+    </div>
+
+    <div class="stage-icon" id="stageIcon">
+      <div class="spinner"></div>
+    </div>
+
+    <div class="progress-wrap">
+      <div class="percent" id="percent">0%</div>
+      <div class="bar"><div class="bar-fill" id="barFill"></div></div>
+      <div class="stage-text" id="stageText">正在准备启动环境...</div>
+      <!-- 实时细节：如"已处理 12 个依赖包" -->
+      <div class="progress-detail" id="progressDetail"></div>
+      <!-- 人性化提示：解释为什么慢 -->
+      <div class="progress-hint" id="progressHint"></div>
+    </div>
+
+    <!-- 命令行日志：可展开 -->
+    <div class="log-panel" id="logPanel">
+      <div class="log-header" id="logHeader">
+        <span class="log-toggle" id="logToggle">▶</span>
+        <span>命令行日志</span>
+        <span class="log-badge" id="logBadge">0</span>
+      </div>
+      <div class="log-body" id="logBody" hidden>
+        <div class="log-hint">等待输出...</div>
+      </div>
+    </div>
+
+    <div class="footer" id="footer" hidden>
+      <button id="btnOpenNode">前往 nodejs.org 下载</button>
+      <button id="btnRetry" class="primary">重新开始</button>
+      <button id="btnQuit">退出</button>
+    </div>
+  </div>
+
+  <!-- ============ 关于弹窗 ============ -->
+  <div class="modal-mask" id="aboutMask" hidden>
+    <div class="modal modal-about">
+      <div class="modal-header">
+        <h2>关于</h2>
+        <button class="modal-close" id="aboutClose" aria-label="关闭">&times;</button>
+      </div>
+
+      <!-- 关于 APP 页面头部 -->
+      <div class="about-hero">
+        <div class="about-logo"><img class="about-logo-img" src="logo-black.svg" alt="DeepSeek Harness" /></div>
+        <div class="about-hero-info">
+          <div class="about-app-name">DeepSeek Harness 桌面版</div>
+          <div class="about-version">版本 <span id="aboutVersion">-</span></div>
+        </div>
+      </div>
+      <p class="about-tagline">DeepSeek Harness 官方 Web UI 的桌面客户端，自动检测环境、安装依赖并拉起服务，开箱即用。</p>
+
+      <div class="modal-tabs">
+        <button class="modal-tab active" id="tabIntro">应用介绍</button>
+        <button class="modal-tab" id="tabChangelog">更新日志</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- 应用介绍：功能 + 技术详情 -->
+        <div class="about-panel" id="panelIntro">
+          <div>
+            <div class="about-title">功能特性</div>
+            <ul class="about-list">
+              <li>安装模式选择：快速启动 / 源码完整安装 / 本地修复，超时自动快速启动</li>
+              <li>人性化启动引导：大百分比进度条 + 阶段提示 + 可展开命令行日志</li>
+              <li>无终端窗口：所有子进程静默执行，不弹命令行窗口</li>
+              <li>环境自动检测：Node.js / git / pnpm 缺失时给出对应安装引导</li>
+              <li>服务自动拉起：复用已有 3080 端口服务，否则自动启动 dsh web</li>
+              <li>系统托盘：关闭窗口最小化到托盘，服务保持后台运行</li>
+              <li>干净退出：退出时自动清理 dsh 子进程，不留残留</li>
+              <li>可打包分发：electron-builder 生成 Windows 安装程序</li>
+            </ul>
+          </div>
+
+          <div>
+            <div class="about-title">技术详情</div>
+            <ul class="about-list">
+              <li>桌面壳：Electron 31，启用 contextIsolation 安全沙箱</li>
+              <li>主进程 main.js：模式状态机 / 安装调度 / 服务拉起 / 窗口与托盘 / 进程清理</li>
+              <li>预加载 preload.js：contextBridge 安全桥接渲染层与主进程 IPC</li>
+              <li>启动引导页 boot/：模式选择 + 进度条 + 日志面板</li>
+              <li>内嵌官方 DeepSeek Harness Web UI（http://127.0.0.1:3080）</li>
+              <li>安装方式：npm 全局安装 @deepseek-ai/dsh / git clone + pnpm 构建</li>
+              <li>打包：electron-builder + NSIS，生成 Windows 安装程序</li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- 更新日志 -->
+        <div class="about-panel" id="panelChangelog" hidden>
+          <div class="about-changelog" id="aboutChangelog">暂无更新日志</div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="footer-btn" id="aboutOk">知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="boot.js"></script>
+</body>
+</html>
