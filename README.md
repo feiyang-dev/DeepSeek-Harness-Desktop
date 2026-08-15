@@ -28,7 +28,7 @@
 
 | 模式 | 说明 | 适合场景 |
 |---|---|---|
-| 快速启动 | `npm install -g @deepseek-ai/dsh` 自动安装 | 大多数用户，最快开始使用 |
+| 快速启动 | `npm exec`（npx）自动解析并运行官方最新版 `@deepseek-ai/dsh` | 大多数用户，最快开始使用；官方发布新版后**下次启动自动更新** |
 | 源码完整安装 | `git clone` + `pnpm install` + `pnpm run build` | 开发者，想改源码/调试 |
 | 本地修复 | 卸载全局 `@deepseek-ai/dsh`、清除残留、重新安装 | 安装损坏、版本异常、koffi 加载失败时一键修复 |
 
@@ -60,13 +60,11 @@
 
 引导页提供「设置」入口，进入独立设置页面：
 
-- **关于**：应用版本、更新日志、更新服务地址
+- **关于**：应用版本、更新日志、更新服务状态
 - **外观**：界面主题 **深色 / 浅色** 一键切换（持久化保存，选择后立即生效）
 - **通知**：新版本系统通知开关（持久化保存）
 - **开发者选项**：「开启开发者选项模式」开关（持久化保存，对下次启动生效）
 - **检查更新**：进入设置页自动检查，支持手动检查、一键下载并安装，下载过程显示实时进度，完成后校验 SHA256
-
-更新服务默认地址 `https://api.deepseekharness.desktop.cwj666.top`，可通过环境变量 `DSH_UPDATE_API` 覆盖。
 
 ### 开发者选项模式（前端开发专用）
 
@@ -177,7 +175,8 @@ dsh-desktop/
 
 关键实现：
 
-- 快速模式：`node <npm>/bin/npm-cli.js install -g @deepseek-ai/dsh --no-audit --no-fund`，环境变量 `npm_config_ignore_scripts=true`（跳过 koffi 源码编译，避免缺 CMake 失败，与 `start-web.bat` 一致）
+- 快速模式：`node <npm>/bin/npm-cli.js exec --yes -- @deepseek-ai/dsh web`，环境变量 `npm_config_ignore_scripts=true`（跳过 koffi 源码编译，避免缺 CMake 失败，与 `start-web.bat` 一致）
+- **版本策略**：`npm exec` 每次启动都会向 registry 解析 `latest`（npx 缓存按 resolved tarball 比对，发现新版自动下载），所以官方发布新版后**下次快速启动自动就是最新版**；registry 不可达时自动改用 `--prefer-offline` 回退到 npx 缓存中已有的版本，避免断网时无法启动
 - 源码模式：仓库 clone 到 `%APPDATA%/dsh-desktop/deepseek-harness`（不污染工作区）；`pnpm install --ignore-scripts` 后 `pnpm run build`；启动用 `node --import tsx/esm apps/cli/src/bin.ts web`
 - 启动服务均不经过 cmd.exe，无终端弹窗
 
@@ -197,6 +196,9 @@ A: 选择"源码完整安装"模式，源码会 clone 到 `%APPDATA%/dsh-desktop
 
 **Q: 开发者选项模式怎么用？**
 A: 设置页开启「开发者选项模式」（需先完成一次"源码完整安装"），然后选择"快速启动"。客户端会分离运行「服务端后端」与「浏览器端热更 watcher（pnpm dev:web）」两个进程，浏览器仍打开 3080；修改 `dsh.client` 插件源码会自动重建并免刷新热更。
+
+**Q: DeepSeek 官方发布了新版本，桌面端要怎么更新？**
+A: 不用手动处理。快速启动使用 `npm exec`（npx）方式：**每次启动都会向 registry 解析最新版并自动下载**，官方发布新版后，下次选择「快速启动」自动就是新版。首页运行状态会显示当前 dsh 版本（如 `dsh v0.1.0-rc.6`）；设置 →「运行环境（dsh）」可一键查看「当前版本 vs 最新版本」。若启动时恰好断网，客户端会自动回退到上次缓存的版本启动，联网后再启动即恢复最新版。
 
 **Q: 开发者选项模式下"本地修复"还可用吗？**
 A: 可用。"本地修复"始终走官方快速版 npx 单进程启动，不受开发者选项影响（修复时会同时清理残留的 watcher 进程）。

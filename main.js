@@ -143,6 +143,7 @@ const serviceState = {
   pid: null,
   devMode: false,      // 开发者选项模式（服务端后端 + 浏览器端热更 watcher 分离运行）
   devWebPid: null,     // 浏览器端热更 watcher 进程 PID
+  dshVersion: null,    // 最近一次 npx 快速启动实际运行的 dsh 版本
 };
 
 // ============================================================
@@ -807,78 +808,103 @@ function cleanServiceEnv() {
 
 // 快速模式启动：npx @deepseek-ai/dsh web（严格遵循官方规范）
 // 用 node <npm-cli.js> exec --yes 直跑，避免 Windows .cmd 弹窗。
-// 首次运行 npx 会自动下载 @deepseek-ai/dsh（官方方式，走已测速的镜像）。
+//
+// 版本策略（npm 11 源码语义）：
+//   npm exec --yes -- @deepseek-ai/dsh 不会复用全局安装（按文件名而非目录匹配），
+//   而是每次向 registry 解析 latest（npx 缓存按 resolved tarball 比对，发现新版自动下载）。
+//   因此官方发布新版本后，下次快速启动自动就是最新版，无需任何手动处理；
+//   仅当 registry 不可达时，自动改用 --prefer-offline 回退到 npx 缓存中已有的版本继续启动。
 function startWebViaNpx(nodeExe, npmCli) {
-  const env = cleanServiceEnv();
+  const baseEnv = cleanServiceEnv();
   // npx 首次会下载安装 @deepseek-ai/dsh，必须跳过 koffi 源码编译（本机无 CMake）
-  env.npm_config_ignore_scripts = 'true';
-  env.npm_config_progress = 'true';
-  env.NPM_CONFIG_LOGLEVEL = 'info';
+  baseEnv.npm_config_ignore_scripts = 'true';
+  baseEnv.npm_config_progress = 'true';
+  baseEnv.NPM_CONFIG_LOGLEVEL = 'info';
   // npm exec --yes -- <pkg> <args>：`--` 之后为包名与 dsh 子命令参数
   const args = ['exec', '--yes', '--', PKG_NAME, 'web', '--host', host, '--port', String(port)];
-  const child = spawn(nodeExe, [npmCli, ...args], {
-    cwd: app.getPath('userData'),
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env,
-  });
-  serverProc = child;
-  serverSpawnedByUs = true;
+
+  let retriedOffline = false; // 是否已用缓存版本兜底重试过（防无限重启）
   let started = false;
-  let startupOutput = ''; // 记录启动输出，用于失败诊断
-  child.stdout && child.stdout.on('data', (d) => {
-    const s = String(d);
-    startupOutput += s;
-    logLine(s.replace(/\r?\n$/, ''));
-    if (/listening|http:\/\/|Local:|ready/i.test(s)) {
-      started = true;
-      setProgress(96, 'start', '服务已启动，正在打开界面...');
-    }
-  });
-  child.stderr && child.stderr.on('data', (d) => {
-    startupOutput += String(d);
-    logLine(String(d).replace(/\r?\n$/, ''));
-  });
-  child.on('error', (err) => { logLine(`[错误] 服务启动失败: ${err.message}`); });
-  child.on('exit', (code, signal) => {
-    // 若该子进程已不是当前服务进程（用户主动停止/重启时 serverProc 已被置空），忽略其退出
-    if (quitting || serverProc !== child) return;
-    // 若因插件树加载失败（残留坏插件引用 "Cannot find package '@feiyang666/...'"）
-    // 或 symlink 异常：优先只删除出错的插件，不碰其他插件与用户数据；
-    // 提取不到坏插件名时才回退到清理整个 profiles（同样保留用户数据）。
-    if (!symlinkHealed && /plugin tree failed to load|Cannot find package|ERR_MODULE_NOT_FOUND|failed to import loader entry|is not a symlink|symlink/i.test(startupOutput)) {
-      symlinkHealed = true;
-      const badPlugins = extractBadPluginNames(startupOutput);
-      if (badPlugins.length > 0) {
-        // 精准修复：备份后只删坏插件
-        logLine(`[自动修复] 检测到坏插件引用：${badPlugins.join(', ')}。正在备份数据并只清理这些插件后重启服务（其他插件与聊天记录/工作区/设置全部保留）...`);
-        backupDshDataBeforeCleanup(path.join(os.homedir(), '.dsh')).then(() => {
-          const r = removePluginRefsFromProfiles(badPlugins);
-          logLine(`[自动修复] 已清理坏插件 ${badPlugins.join(', ')}（删除残留 ${r.removed} 处，涉及 ${r.touched} 个 profile），正在重启服务...`);
+  let startupOutput = '';     // 记录启动输出，用于失败诊断
+  let child = null;
+
+  const spawnOnce = (extraEnv) => {
+    const env = { ...baseEnv, ...(extraEnv || {}) };
+    child = spawn(nodeExe, [npmCli, ...args], {
+      cwd: app.getPath('userData'),
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    });
+    serverProc = child;
+    serverSpawnedByUs = true;
+    started = false;
+    startupOutput = '';
+    child.stdout && child.stdout.on('data', (d) => {
+      const s = String(d);
+      startupOutput += s;
+      logLine(s.replace(/\r?\n$/, ''));
+      if (/listening|http:\/\/|Local:|ready/i.test(s)) {
+        started = true;
+        setProgress(96, 'start', '服务已启动，正在打开界面...');
+      }
+    });
+    child.stderr && child.stderr.on('data', (d) => {
+      startupOutput += String(d);
+      logLine(String(d).replace(/\r?\n$/, ''));
+    });
+    child.on('error', (err) => { logLine(`[错误] 服务启动失败: ${err.message}`); });
+    child.on('exit', (code, signal) => {
+      // 若该子进程已不是当前服务进程（用户主动停止/重启时 serverProc 已被置空），忽略其退出
+      if (quitting || serverProc !== child) return;
+      // 离线兜底：npm exec 解析 registry 最新版失败（网络 / 镜像不可达）时，
+      // 用 --prefer-offline 回退到 npx 缓存中已有的 dsh 版本继续启动（首次启动仍需要网络）
+      if (!started && !retriedOffline && MIRROR_FAIL_RE.test(startupOutput)) {
+        retriedOffline = true;
+        logLine('[版本] registry 暂不可达，正在用 npx 缓存中的 dsh 版本重试（--prefer-offline）...');
+        serverProc = null;
+        spawnOnce({ npm_config_prefer_offline: 'true' });
+        return;
+      }
+      // 若因插件树加载失败（残留坏插件引用 "Cannot find package '@feiyang666/...'"）
+      // 或 symlink 异常：优先只删除出错的插件，不碰其他插件与用户数据；
+      // 提取不到坏插件名时才回退到清理整个 profiles（同样保留用户数据）。
+      if (!symlinkHealed && /plugin tree failed to load|Cannot find package|ERR_MODULE_NOT_FOUND|failed to import loader entry|is not a symlink|symlink/i.test(startupOutput)) {
+        symlinkHealed = true;
+        const badPlugins = extractBadPluginNames(startupOutput);
+        if (badPlugins.length > 0) {
+          // 精准修复：备份后只删坏插件
+          logLine(`[自动修复] 检测到坏插件引用：${badPlugins.join(', ')}。正在备份数据并只清理这些插件后重启服务（其他插件与聊天记录/工作区/设置全部保留）...`);
+          backupDshDataBeforeCleanup(path.join(os.homedir(), '.dsh')).then(() => {
+            const r = removePluginRefsFromProfiles(badPlugins);
+            logLine(`[自动修复] 已清理坏插件 ${badPlugins.join(', ')}（删除残留 ${r.removed} 处，涉及 ${r.touched} 个 profile），正在重启服务...`);
+            setTimeout(() => {
+              if (!quitting && !serverProc) startWebViaNpx(nodeExe, npmCli);
+            }, 600);
+          });
+          return;
+        }
+        logLine('[自动修复] 检测到 profile 插件加载失败，但无法定位具体坏插件，正在备份数据并清理坏插件引用（profiles 目录）后重启服务...');
+        nukeLocalDshData().then(() => {
           setTimeout(() => {
             if (!quitting && !serverProc) startWebViaNpx(nodeExe, npmCli);
           }, 600);
         });
         return;
       }
-      logLine('[自动修复] 检测到 profile 插件加载失败，但无法定位具体坏插件，正在备份数据并清理坏插件引用（profiles 目录）后重启服务...');
-      nukeLocalDshData().then(() => {
-        setTimeout(() => {
-          if (!quitting && !serverProc) startWebViaNpx(nodeExe, npmCli);
-        }, 600);
-      });
-      return;
-    }
-    if (started) {
-      logLine(`[诊断] 服务曾成功启动，但后来退出 (code=${code}, signal=${signal})`);
-      onServiceExited();
-      bootError(`dsh 服务启动后退出 (code=${code})，请查看日志`);
-    } else {
-      logLine(`[诊断] 服务未输出就绪信息即退出 (code=${code}, signal=${signal})`);
-      bootError(`dsh 服务启动失败 (code=${code})，请查看日志`);
-    }
-    serverProc = null;
-  });
+      if (started) {
+        logLine(`[诊断] 服务曾成功启动，但后来退出 (code=${code}, signal=${signal})`);
+        onServiceExited();
+        bootError(`dsh 服务启动后退出 (code=${code})，请查看日志`);
+      } else {
+        logLine(`[诊断] 服务未输出就绪信息即退出 (code=${code}, signal=${signal})`);
+        bootError(`dsh 服务启动失败 (code=${code})，请查看日志`);
+      }
+      serverProc = null;
+    });
+  };
+
+  spawnOnce();
 }
 
 async function stopWebService() {
@@ -1196,6 +1222,35 @@ function finishBoot() {
   broadcast('boot:phase', { phase: 'running', service: { ...serviceState } });
   refreshTrayMenu();
   showMainWindow();
+  // 快速 / 修复模式：异步查询 npx 实际运行的 dsh 版本并展示（不阻塞；源码 / 开发者模式跳过）
+  if ((selectedMode === 'quick' || selectedMode === 'repair') && !serviceState.devMode) {
+    reportDshVersion();
+  }
+}
+
+// 运行状态增量更新（如 dsh 版本晚到时轻量推送，不触发界面切换）
+function broadcastServiceUpdate() {
+  broadcast('service:update', { service: { ...serviceState } });
+}
+
+// 查询并展示当前 npx 运行的 dsh 版本。
+// npm exec 每次解析 registry 最新版（npx 缓存按 resolved tarball 比对自动更新），
+// 官方发布新版本后下次启动自动就是最新版；这里仅做展示，不阻塞启动流程，失败静默。
+function reportDshVersion() {
+  (async () => {
+    try {
+      const nodeExe = await findNodeExe();
+      const npmCli = await findNpmCli();
+      if (!nodeExe || !npmCli) return;
+      const r = await runCommand(nodeExe, [npmCli, 'exec', '--yes', '--silent', '--', PKG_NAME, '--version'], { env: cleanServiceEnv() }, () => {});
+      const line = String(r.out || '').split(/\r?\n/).map((s) => s.trim()).find((s) => /^v?\d+\.\d+\.\d+/.test(s));
+      if (line) {
+        serviceState.dshVersion = line.replace(/^v/, '');
+        logLine(`[版本] 正在运行 dsh v${serviceState.dshVersion}（npm exec 每次解析 registry 最新版，官方发布新版后下次启动自动更新）`);
+        broadcastServiceUpdate();
+      }
+    } catch (e) { /* 静默 */ }
+  })();
 }
 
 // 显示 / 重建 WebUI 主窗口（运行中或重新运行后调用）
@@ -1841,6 +1896,7 @@ ipcMain.handle('settings:get', async () => {
     changelog,
     notifications: cfg.notifications !== false,
     developerMode: cfg.developerMode === true,
+    dshVersion: serviceState.dshVersion,
     theme: cfg.theme === 'light' ? 'light' : 'dark',
     deviceId: cfg.deviceId,
     updateApiBase: UPDATE_API_BASE,
@@ -1874,6 +1930,32 @@ ipcMain.handle('settings:set-developer-mode', (e, enabled) => {
   saveAppConfig();
   logLine(`[设置] 开发者选项模式已${cfg.developerMode ? '开启' : '关闭'}（对下次启动生效）`);
   return { ok: true, developerMode: cfg.developerMode };
+});
+
+// 查询 dsh 运行环境版本信息（设置页展示）：当前运行版本 + registry 最新版本。
+// 快速启动（npm exec）每次都会解析 registry 最新版并自动更新，这里仅做对比展示。
+ipcMain.handle('dsh:version-info', async () => {
+  const running = serviceState.dshVersion || null;
+  let latest = null;
+  let error = '';
+  try {
+    const nodeExe = await findNodeExe();
+    const npmCli = await findNpmCli();
+    if (!nodeExe || !npmCli) throw new Error('未检测到 Node.js / npm');
+    const r = await runCommand(nodeExe, [npmCli, 'view', PKG_NAME, 'version', '--registry', npmRegistry, '--no-audit', '--no-fund'], { env: cleanServiceEnv() }, () => {});
+    const line = String(r.out || '').split(/\r?\n/).map((s) => s.trim()).find((s) => /^\d+\.\d+\.\d+/.test(s));
+    if (!line) throw new Error('解析 registry 版本失败');
+    latest = line.replace(/^v/, '');
+  } catch (e) {
+    error = e.message;
+  }
+  return {
+    ok: !error,
+    running,
+    latest,
+    outdated: !!(running && latest && running !== latest),
+    error,
+  };
 });
 
 ipcMain.handle('update:check', async () => {

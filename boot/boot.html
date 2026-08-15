@@ -279,6 +279,19 @@
         </div>
       </section>
 
+      <!-- 运行环境（dsh 版本） -->
+      <section class="settings-card">
+        <div class="settings-card-title">运行环境（dsh）</div>
+        <div class="settings-row">
+          <div class="settings-row-text">
+            <div class="update-status" id="setDshVersion">当前版本：-</div>
+            <div class="settings-desc">快速启动使用 npm exec（npx）方式启动：每次启动都会自动解析并更新到官方 registry 的最新版本，官方发布新版后下次启动自动生效，无需手动处理</div>
+          </div>
+          <button class="settings-btn" id="setDshCheckBtn">检查最新版本</button>
+        </div>
+        <div class="plugin-note" id="setDshVersionNote" hidden></div>
+      </section>
+
       <!-- 检查更新 -->
       <section class="settings-card">
         <div class="settings-card-title">检查更新</div>

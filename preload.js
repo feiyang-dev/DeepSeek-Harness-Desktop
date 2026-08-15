@@ -63,6 +63,12 @@ contextBridge.exposeInMainWorld('dsh', {
   restartService: () => ipcRenderer.invoke('service:restart'),
   // 打开 / 聚焦 WebUI 主窗口
   showMain: () => ipcRenderer.invoke('service:show-main'),
+  // 运行状态增量更新（如 dsh 版本晚到，不切换界面）
+  onServiceUpdate: (cb) => {
+    const listener = (_e, d) => cb(d);
+    ipcRenderer.on('service:update', listener);
+    return () => ipcRenderer.removeListener('service:update', listener);
+  },
 
   // ---- 关于 ----
   getAboutInfo: () => ipcRenderer.invoke('app:about-info'),
@@ -76,6 +82,8 @@ contextBridge.exposeInMainWorld('dsh', {
   setTheme: (theme) => ipcRenderer.invoke('settings:set-theme', theme),
   // 开发者选项模式开关（对下次启动生效）
   setDeveloperMode: (enabled) => ipcRenderer.invoke('settings:set-developer-mode', enabled),
+  // dsh 运行环境版本信息（当前运行版本 + registry 最新版本）
+  getDshVersionInfo: () => ipcRenderer.invoke('dsh:version-info'),
 
   // ---- 更新 ----
   // 检查更新（返回当前状态）

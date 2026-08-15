@@ -88,6 +88,9 @@ const setNotifyToggle = document.getElementById('setNotifyToggle');
 const themeDarkBtn = document.getElementById('themeDarkBtn');
 const themeLightBtn = document.getElementById('themeLightBtn');
 const setDevModeToggle = document.getElementById('setDevModeToggle');
+const setDshVersion = document.getElementById('setDshVersion');
+const setDshCheckBtn = document.getElementById('setDshCheckBtn');
+const setDshVersionNote = document.getElementById('setDshVersionNote');
 const setUpdateStatus = document.getElementById('setUpdateStatus');
 const setUpdateHint = document.getElementById('setUpdateHint');
 const setCheckBtn = document.getElementById('setCheckBtn');
@@ -188,9 +191,10 @@ function startUptimeTicker(service) {
   const startedAt = (service && service.startedAt) || Date.now();
   const port = (service && service.port) || 3080;
   const devMode = !!(service && service.devMode);
+  const dshVer = service && service.dshVersion;
   const tick = () => {
     const secs = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-    statusDesc.textContent = `服务运行于 http://127.0.0.1:${port} · 已运行 ${formatUptime(secs * 1000)}${devMode ? ' · 开发者模式' : ''}`;
+    statusDesc.textContent = `服务运行于 http://127.0.0.1:${port} · 已运行 ${formatUptime(secs * 1000)}${dshVer ? ' · dsh v' + dshVer : ''}${devMode ? ' · 开发者模式' : ''}`;
   };
   tick();
   uptimeTimer = setInterval(tick, 5000);
@@ -580,6 +584,7 @@ pluginRestartBtn.addEventListener('click', () => {
 function openSettings() {
   showScreen('settings');
   loadSettings();
+  loadDshVersionInfo();
   // 进入设置页自动检查更新
   if (window.dsh && window.dsh.checkUpdate) {
     window.dsh.checkUpdate();
@@ -645,6 +650,9 @@ function loadSettings() {
       setVersion.textContent = 'v' + cfg.version;
       setNotifyToggle.checked = !!cfg.notifications;
       setDevModeToggle.checked = !!cfg.developerMode;
+      if (cfg.dshVersion) {
+        setDshVersion.textContent = '当前版本：v' + cfg.dshVersion;
+      }
       if (cfg.theme) {
         applyTheme(cfg.theme);
       }
@@ -673,6 +681,44 @@ setDevModeToggle.addEventListener('change', () => {
     window.dsh.setDeveloperMode(setDevModeToggle.checked);
   }
 });
+
+// ============ 运行环境（dsh 版本） ============
+// 快速启动用 npm exec（npx）：每次启动自动解析 registry 最新版并更新，
+// 这里展示"当前运行版本 vs registry 最新版本"，并提示重新运行即可用新版。
+function showDshNote(text, kind) {
+  setDshVersionNote.hidden = !text;
+  setDshVersionNote.textContent = text || '';
+  setDshVersionNote.className = 'plugin-note' + (kind ? ' ' + kind : '');
+}
+
+function loadDshVersionInfo() {
+  if (!window.dsh || !window.dsh.getDshVersionInfo) return;
+  setDshCheckBtn.disabled = true;
+  window.dsh.getDshVersionInfo().then((info) => {
+    setDshCheckBtn.disabled = false;
+    if (!info || !info.ok) {
+      if (info && info.running) setDshVersion.textContent = '当前版本：v' + info.running;
+      showDshNote('最新版本查询失败：' + ((info && info.error) || '未知错误') + '（检查网络后重试）', 'err');
+      return;
+    }
+    const parts = [];
+    if (info.running) parts.push('当前版本 v' + info.running);
+    if (info.latest) parts.push('最新版本 v' + info.latest);
+    setDshVersion.textContent = parts.length > 0 ? parts.join(' · ') : '当前版本：-';
+    if (info.outdated) {
+      showDshNote('发现新版本：停止运行后重新选择「快速启动」，npx 会自动下载并使用最新版', '');
+    } else if (info.running && info.latest) {
+      showDshNote('已是最新版本', 'ok');
+    } else {
+      showDshNote('', '');
+    }
+  }).catch(() => {
+    setDshCheckBtn.disabled = false;
+    showDshNote('最新版本查询失败', 'err');
+  });
+}
+
+setDshCheckBtn.addEventListener('click', loadDshVersionInfo);
 
 setCheckBtn.addEventListener('click', () => {
   if (window.dsh && window.dsh.checkUpdate) {
@@ -910,6 +956,17 @@ if (!window.dsh) {
   window.dsh.onUpdateStatus((status) => {
     renderUpdateStatus(status);
     renderUpdatePopup(status);
+  });
+
+  // 运行状态增量更新（如 dsh 版本晚到）：刷新首页控制台，但不切换界面
+  window.dsh.onServiceUpdate(({ service }) => {
+    if (service && service.running) {
+      renderHome('running', service);
+      // 若正停留在设置页，同步刷新「运行环境（dsh）」的当前版本展示
+      if (!settingsScreen.hidden && service.dshVersion && setDshVersion) {
+        setDshVersion.textContent = '当前版本：v' + service.dshVersion;
+      }
+    }
   });
 
   // 插件安装/卸载事件（主进程推送的进度与结果）
