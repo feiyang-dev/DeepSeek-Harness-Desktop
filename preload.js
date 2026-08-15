@@ -116,4 +116,10 @@ contextBridge.exposeInMainWorld('dsh', {
     ipcRenderer.on('plugin:event', listener);
     return () => ipcRenderer.removeListener('plugin:event', listener);
   },
+
+  // ---- 插件市场（扫描 GitHub topic:dsh-plugin） ----
+  // 获取插件市场列表（{ keyword, page, perPage }）
+  listMarket: (payload) => ipcRenderer.invoke('plugin:market-list', payload || {}),
+  // 一键安装市场插件（按 npm 包名）
+  installMarketPlugin: (pkg) => ipcRenderer.invoke('plugin:market-install', { pkg }),
 });

@@ -4,7 +4,10 @@
 const homeScreen = document.getElementById('homeScreen');
 const progressScreen = document.getElementById('progressScreen');
 const pluginScreen = document.getElementById('pluginScreen');
+const marketScreen = document.getElementById('marketScreen');
 const settingsScreen = document.getElementById('settingsScreen');
+const shell = document.getElementById('shell');
+const sidebar = document.getElementById('sidebar');
 const appTitleHome = document.getElementById('appTitleHome');
 const appTitleProgress = document.getElementById('appTitleProgress');
 const homeSubtitle = document.getElementById('homeSubtitle');
@@ -22,7 +25,6 @@ const statusDesc = document.getElementById('statusDesc');
 const btnOpenMain = document.getElementById('btnOpenMain');
 const btnStopService = document.getElementById('btnStopService');
 const btnRestartService = document.getElementById('btnRestartService');
-const homePluginBtn = document.getElementById('homePluginBtn');
 
 const percentEl = document.getElementById('percent');
 const barFillEl = document.getElementById('barFill');
@@ -50,7 +52,6 @@ const logBody = document.getElementById('logBody');
 const logBadge = document.getElementById('logBadge');
 
 // 插件管理页
-const pluginBack = document.getElementById('pluginBack');
 const pluginDefRefreshBtn = document.getElementById('pluginDefRefreshBtn');
 const recPluginList = document.getElementById('recPluginList');
 const customPkgInput = document.getElementById('customPkgInput');
@@ -63,6 +64,27 @@ const customLogBadge = document.getElementById('customLogBadge');
 const installedList = document.getElementById('installedList');
 const restartHintCard = document.getElementById('restartHintCard');
 const pluginRestartBtn = document.getElementById('pluginRestartBtn');
+
+// 插件市场页
+const marketSearchInput = document.getElementById('marketSearchInput');
+const marketSearchBtn = document.getElementById('marketSearchBtn');
+const marketRefreshBtn = document.getElementById('marketRefreshBtn');
+const marketTotal = document.getElementById('marketTotal');
+const marketList = document.getElementById('marketList');
+const marketLoading = document.getElementById('marketLoading');
+const marketEmpty = document.getElementById('marketEmpty');
+const marketPager = document.getElementById('marketPager');
+const marketPrevBtn = document.getElementById('marketPrevBtn');
+const marketNextBtn = document.getElementById('marketNextBtn');
+const marketPageInfo = document.getElementById('marketPageInfo');
+
+// 侧栏导航
+const navHome = document.getElementById('navHome');
+const navPlugin = document.getElementById('navPlugin');
+const navMarket = document.getElementById('navMarket');
+const navSettings = document.getElementById('navSettings');
+const sidebarDot = document.getElementById('sidebarDot');
+const sidebarStatusText = document.getElementById('sidebarStatusText');
 
 // 更新弹窗
 const updateMask = document.getElementById('updateMask');
@@ -77,8 +99,6 @@ const umActionBtn = document.getElementById('umActionBtn');
 const umActionText = document.getElementById('umActionText');
 
 // 设置页
-const settingsEntry = document.getElementById('settingsEntry');
-const settingsBack = document.getElementById('settingsBack');
 const setVersion = document.getElementById('setVersion');
 const setAppName = document.getElementById('setAppName');
 const setTagline = document.getElementById('setTagline');
@@ -161,8 +181,27 @@ function showScreen(name) {
   homeScreen.hidden = name !== 'home';
   progressScreen.hidden = name !== 'progress';
   pluginScreen.hidden = name !== 'plugin';
+  marketScreen.hidden = name !== 'market';
   settingsScreen.hidden = name !== 'settings';
+  // 侧栏：进度页（全屏覆盖）时隐藏，其余页面显示
+  if (sidebar) sidebar.hidden = name === 'progress';
+  if (shell) shell.classList.toggle('no-sidebar', name === 'progress');
+  syncNavActive(name);
   if (name !== 'home') stopUptimeTicker();
+}
+
+// 高亮侧栏当前项
+function syncNavActive(name) {
+  const map = { home: navHome, plugin: navPlugin, market: navMarket, settings: navSettings };
+  for (const k in map) {
+    if (map[k]) map[k].classList.toggle('active', k === name);
+  }
+}
+
+// 侧栏服务状态点（运行中绿色 / 停止灰色）
+function setSidebarStatus(running) {
+  if (sidebarDot) sidebarDot.className = 'sidebar-dot' + (running ? ' running' : '');
+  if (sidebarStatusText) sidebarStatusText.textContent = running ? '运行中' : '未运行';
 }
 
 // ============ 首页渲染（模式选择 / 运行中 / 已停止） ============
@@ -214,6 +253,7 @@ function renderHome(phase, service) {
     btnOpenMain.hidden = false;
     btnStopService.hidden = false;
     btnRestartService.hidden = false;
+    setSidebarStatus(true);
     startUptimeTicker(service);
   } else if (phase === 'stopped') {
     homeSubtitle.textContent = '服务已停止';
@@ -227,6 +267,7 @@ function renderHome(phase, service) {
     btnOpenMain.hidden = true;
     btnStopService.hidden = true;
     btnRestartService.hidden = false;
+    setSidebarStatus(false);
     stopUptimeTicker();
   } else {
     // mode：选择启动模式
@@ -235,6 +276,7 @@ function renderHome(phase, service) {
     homeHint.hidden = false;
     modeCards.hidden = false;
     statusPanel.hidden = true;
+    setSidebarStatus(false);
     stopUptimeTicker();
   }
 }
@@ -304,9 +346,6 @@ function resetCustomLog() {
   customLogPanel.hidden = true;
   showCustomNote('', '');
 }
-
-homePluginBtn.addEventListener('click', openPluginPage);
-pluginBack.addEventListener('click', () => showScreen('home'));
 
 function setPluginBusy(busy) {
   pluginBusy = busy;
@@ -580,6 +619,229 @@ pluginRestartBtn.addEventListener('click', () => {
   window.dsh.restartService();
 });
 
+// ============ 插件市场页 ============
+let marketPage = 1;
+let marketKeyword = '';
+let marketTotalCount = 0;
+let marketBusy = false;
+const MARKET_PER_PAGE = 30;
+
+function openMarketPage() {
+  showScreen('market');
+  marketPage = 1;
+  marketKeyword = '';
+  marketSearchInput.value = '';
+  loadMarket();
+}
+
+function setMarketBusy(busy) {
+  marketBusy = busy;
+  marketSearchBtn.disabled = busy;
+  marketRefreshBtn.disabled = busy;
+  marketPrevBtn.disabled = busy;
+  marketNextBtn.disabled = busy;
+  marketSearchInput.disabled = busy;
+}
+
+function formatStars(n) {
+  if (n == null) return '0';
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
+  return String(n);
+}
+
+// 渲染单个市场插件条目
+function buildMarketItem(p) {
+  const item = document.createElement('div');
+  item.className = 'market-item' + (p.installed ? ' installed' : '') + (p.official ? ' official' : '');
+
+  // 图标
+  const icon = document.createElement('div');
+  icon.className = 'market-item-icon';
+  if (p.iconType === 'emoji') {
+    icon.textContent = p.iconValue;
+    icon.classList.add('emoji');
+  } else {
+    icon.textContent = p.iconValue;
+    icon.classList.add('letter');
+  }
+
+  // 信息
+  const info = document.createElement('div');
+  info.className = 'market-item-info';
+  const nameRow = document.createElement('div');
+  nameRow.className = 'market-item-name-row';
+  const name = document.createElement('span');
+  name.className = 'market-item-name';
+  name.textContent = p.name;
+  name.title = p.fullName;
+  nameRow.appendChild(name);
+  if (p.official) {
+    const badge = document.createElement('span');
+    badge.className = 'market-badge official';
+    badge.textContent = '官方';
+    nameRow.appendChild(badge);
+  }
+  if (!p.installable) {
+    const badge = document.createElement('span');
+    badge.className = 'market-badge nodl';
+    badge.textContent = '非 npm 包';
+    nameRow.appendChild(badge);
+  }
+
+  const author = document.createElement('div');
+  author.className = 'market-item-author';
+  author.textContent = p.owner;
+
+  const desc = document.createElement('div');
+  desc.className = 'market-item-desc';
+  desc.textContent = p.description || '（无描述）';
+
+  const meta = document.createElement('div');
+  meta.className = 'market-item-meta';
+  const metaParts = [];
+  metaParts.push(`★ ${formatStars(p.stars)}`);
+  if (p.language) metaParts.push(p.language);
+  if (p.license) metaParts.push(p.license);
+  if (p.installed) metaParts.push('已安装 v' + (p.installedVersion || '?'));
+  meta.textContent = metaParts.join(' · ');
+
+  info.appendChild(nameRow);
+  info.appendChild(author);
+  info.appendChild(desc);
+  info.appendChild(meta);
+
+  // 操作
+  const actions = document.createElement('div');
+  actions.className = 'market-item-actions';
+  if (p.installed) {
+    const done = document.createElement('span');
+    done.className = 'market-installed-label';
+    done.textContent = '已安装';
+    actions.appendChild(done);
+  } else if (p.installable) {
+    const install = document.createElement('button');
+    install.className = 'btn btn-primary btn-sm';
+    install.textContent = '安装';
+    install.disabled = marketBusy;
+    install.addEventListener('click', () => installMarketPlugin(p, install));
+    actions.appendChild(install);
+  }
+  const open = document.createElement('button');
+  open.className = 'btn btn-sm';
+  open.textContent = '查看';
+  open.addEventListener('click', () => {
+    if (window.dsh) window.dsh.openExternal(p.repoUrl || `https://github.com/${p.fullName}`);
+  });
+  actions.appendChild(open);
+
+  item.appendChild(icon);
+  item.appendChild(info);
+  item.appendChild(actions);
+  return item;
+}
+
+function installMarketPlugin(p, btn) {
+  if (marketBusy || !window.dsh || !window.dsh.installMarketPlugin) return;
+  if (!p.pkgName) return;
+  if (btn) btn.disabled = true;
+  restartHintCard.hidden = true; // 该卡片在插件页；从市场安装后也提示重启
+  window.dsh.installMarketPlugin(p.pkgName).then((r) => {
+    if (r && r.ok) {
+      loadMarket();
+      loadInstalledList();
+    } else if (btn) {
+      btn.disabled = false;
+    }
+  }).catch(() => {
+    if (btn) btn.disabled = false;
+  });
+}
+
+function loadMarket() {
+  if (!window.dsh || !window.dsh.listMarket) return;
+  setMarketBusy(true);
+  marketLoading.hidden = false;
+  marketEmpty.hidden = true;
+  marketList.classList.add('loading');
+  window.dsh.listMarket({
+    keyword: marketKeyword,
+    page: marketPage,
+    perPage: MARKET_PER_PAGE,
+  }).then((res) => {
+    setMarketBusy(false);
+    marketLoading.hidden = true;
+    marketList.classList.remove('loading');
+    if (!res || !res.ok) {
+      marketList.innerHTML = '';
+      marketEmpty.hidden = false;
+      marketEmpty.textContent = '插件市场加载失败：' + ((res && res.error) || '未知错误') + '（可能触发了 GitHub 限流，稍后再试）';
+      marketTotal.textContent = '加载失败';
+      marketPager.hidden = true;
+      return;
+    }
+    marketTotalCount = res.total || res.list.length;
+    marketTotal.textContent = `共 ${marketTotalCount} 个插件`;
+    marketList.innerHTML = '';
+    if (!res.list || res.list.length === 0) {
+      marketEmpty.hidden = false;
+      marketEmpty.textContent = '没有找到匹配的插件';
+      marketPager.hidden = true;
+      return;
+    }
+    for (const p of res.list) {
+      marketList.appendChild(buildMarketItem(p));
+    }
+    // 分页
+    const totalPages = Math.max(1, Math.ceil(marketTotalCount / MARKET_PER_PAGE));
+    marketPageInfo.textContent = `${marketPage} / ${totalPages}`;
+    marketPager.hidden = totalPages <= 1;
+    marketPrevBtn.disabled = marketPage <= 1;
+    marketNextBtn.disabled = marketPage >= totalPages;
+  }).catch(() => {
+    setMarketBusy(false);
+    marketLoading.hidden = true;
+    marketList.classList.remove('loading');
+    marketList.innerHTML = '';
+    marketEmpty.hidden = false;
+    marketEmpty.textContent = '插件市场加载失败（网络异常）';
+    marketTotal.textContent = '加载失败';
+    marketPager.hidden = true;
+  });
+}
+
+marketSearchBtn.addEventListener('click', () => {
+  marketKeyword = marketSearchInput.value.trim();
+  marketPage = 1;
+  loadMarket();
+});
+marketSearchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    marketKeyword = marketSearchInput.value.trim();
+    marketPage = 1;
+    loadMarket();
+  }
+});
+marketRefreshBtn.addEventListener('click', () => {
+  loadMarket();
+});
+marketPrevBtn.addEventListener('click', () => {
+  if (marketPage <= 1) return;
+  marketPage -= 1;
+  loadMarket();
+});
+marketNextBtn.addEventListener('click', () => {
+  const totalPages = Math.max(1, Math.ceil(marketTotalCount / MARKET_PER_PAGE));
+  if (marketPage >= totalPages) return;
+  marketPage += 1;
+  loadMarket();
+});
+
+// ============ 侧栏导航 ============
+navHome.addEventListener('click', () => showScreen('home'));
+navPlugin.addEventListener('click', openPluginPage);
+navMarket.addEventListener('click', openMarketPage);
+navSettings.addEventListener('click', openSettings);
+
 // ============ 设置页 ============
 function openSettings() {
   showScreen('settings');
@@ -590,13 +852,6 @@ function openSettings() {
     window.dsh.checkUpdate();
   }
 }
-
-function closeSettings() {
-  showScreen('home');
-}
-
-settingsEntry.addEventListener('click', openSettings);
-settingsBack.addEventListener('click', closeSettings);
 
 // ============ 界面主题（深色 / 浅色） ============
 // 应用主题：在 <html> 上设置 data-theme，CSS 变量据此切换
@@ -648,6 +903,9 @@ function loadSettings() {
     if (cfg) {
       applyAppName(cfg.appName, cfg.appTagline);
       setVersion.textContent = 'v' + cfg.version;
+      // 侧栏版本号
+      const sv = document.getElementById('sidebarVersion');
+      if (sv) sv.textContent = 'v' + cfg.version;
       setNotifyToggle.checked = !!cfg.notifications;
       setDevModeToggle.checked = !!cfg.developerMode;
       if (cfg.dshVersion) {

@@ -1,0 +1,55 @@
+# ============================================================
+#  macOS 打包（云端 macOS 构建机）
+#  ------------------------------------------------------------
+#  electron-builder 的 mac 目标（dmg/zip）只能在 macOS 上构建
+#  （Windows/Linux 上会直接报 "Build for macOS is supported
+#   only on macOS"）。本 workflow 使用 GitHub 托管的 macOS
+#  runner 完成打包，Windows 上开发、推送后自动产出：
+#    release/*-mac-x64.dmg / .zip   （Intel）
+#    release/*-mac-arm64.dmg / .zip （Apple Silicon）
+#
+#  触发方式：
+#    - 手动：仓库 Actions 页 → Build macOS packages → Run workflow
+#    - 自动：推送 v* 标签（如 v1.4.2）
+#  产物下载：Actions 运行页 → Artifacts → dsh-desktop-mac
+# ============================================================
+name: Build macOS packages
+
+on:
+  workflow_dispatch: # 手动触发
+  push:
+    tags:
+      - 'v*' # 打 v 前缀标签时自动触发
+
+jobs:
+  mac:
+    name: macOS (x64 + arm64)
+    runs-on: macos-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: 安装依赖
+        run: npm install
+
+      - name: 打包 macOS 安装包（未签名，双架构）
+        # identity: null 已跳过签名；CSC_IDENTITY_AUTO_DISCOVERY=false 兜底，
+        # 避免机器上恰好存在任何签名身份时 electron-builder 尝试签名而失败
+        run: npm run dist:mac -- --x64 --arm64
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-desktop-mac
+          path: |
+            release/*-mac-*.dmg
+            release/*-mac-*.zip
+          if-no-files-found: error

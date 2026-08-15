@@ -1,13 +1,15 @@
 {
   "name": "dsh-desktop",
-  "version": "1.4.2",
+  "version": "1.6.0",
   "description": "DeepSeek Harness 桌面版 —— 一键安装/启动/停止/重启 dsh web 服务，插件管理与自定义安装，在线更新，系统托盘常驻",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder --win"
+    "dist": "electron-builder --win",
+    "pack:mac": "electron-builder --mac --dir",
+    "dist:mac": "electron-builder --mac"
   },
   "author": "dsh-desktop",
   "license": "MIT",
@@ -26,6 +28,7 @@
       "main.js",
       "preload.js",
       "plugin-manager.js",
+      "plugin-market.js",
       "boot/**/*",
       "assets/**/*",
       "CHANGELOG.md"
@@ -41,6 +44,20 @@
       ],
       "icon": "assets/icon.png",
       "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/icon-1024.png",
+      "artifactName": "${productName}-${version}-mac-${arch}.${ext}",
+      "identity": null
+    },
+    "dmg": {
+      "title": "${productName} ${version}",
+      "artifactName": "${productName}-${version}-mac-${arch}.dmg"
     },
     "nsis": {
       "oneClick": false,

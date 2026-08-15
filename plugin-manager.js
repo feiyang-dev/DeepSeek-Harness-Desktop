@@ -230,6 +230,60 @@ function runCommand(exe, args, opts, onOut) {
 }
 
 // ------------------------------------------------------------
+//  已知插件兼容性补丁
+// ------------------------------------------------------------
+// dsh-vault（@feiyang666/deepseekharnessdesktop-vault）在注册 backup_vault 工具时，
+// 在字段类型上误用 `required: true`（违反 JSON Schema 规范），导致 dsh 运行时打印：
+//   [dsh-vault] backup_vault 工具注册失败（不影响备份/恢复）:
+//     unsupported JSON schema: schema.properties.ok.required is not supported on type "boolean"
+// 这里在安装 / 升级插件后自动把 required 从字段内部挪到 schema 顶层，消除该报警。
+// 全程基于精确短串匹配：命中旧写法才替换，已是新写法 / 结构变化时安全跳过，不报错。
+function applyVaultSchemaPatch(pkgDir) {
+  if (!pkgDir) return false;
+  const indexFile = path.join(pkgDir, 'lib', 'index.js');
+  if (!fs.existsSync(indexFile)) return false;
+  let text;
+  try {
+    text = fs.readFileSync(indexFile, 'utf8');
+  } catch (e) {
+    return false;
+  }
+  let next = text;
+
+  // 1) 字段上的 required:true 逐处移除
+  //    action 输入字段：`action: { type: 'string', required: true, ...`
+  next = next.replace(
+    /(action:\s*\{\s*type:\s*'string',\s*)\brequired:\s*true,\s*/,
+    '$1'
+  );
+  //    ok 输出字段：`ok: { type: 'boolean', required: true },` → `ok: { type: 'boolean' },`
+  next = next.replace(
+    /(ok:\s*\{\s*type:\s*'boolean')(\s*,\s*required:\s*true)(\s*\})/,
+    '$1$3'
+  );
+
+  // 2) 顶层 required 数组：锚定到各自的 properties 内容，区分 input / output
+  //    input：properties 下第一个字段是 action
+  if (!next.includes("required: ['action']")) {
+    next = next.replace(
+      /(additionalProperties:\s*false,[\r\n]+)(\s*)(properties:\s*\{\s*action)/,
+      (m, g1, sp, g3) => g1 + sp + "required: ['action'],\n" + sp + g3
+    );
+  }
+  //    output：properties 下第一个字段是 ok
+  if (!next.includes("required: ['ok']")) {
+    next = next.replace(
+      /(additionalProperties:\s*false,[\r\n]+)(\s*)(properties:\s*\{\s*ok)/,
+      (m, g1, sp, g3) => g1 + sp + "required: ['ok'],\n" + sp + g3
+    );
+  }
+
+  if (next === text) return false; // 无任何改动（已是新写法或不含该 bug）
+  fs.writeFileSync(indexFile, next, 'utf8');
+  return true;
+}
+
+// ------------------------------------------------------------
 //  安装
 // ------------------------------------------------------------
 // options: { nodeExe, npmCli, registry, profile, pkg, onOut, env }
@@ -266,6 +320,10 @@ async function installPlugin(options) {
   if (bundleDeclared && !manifest.dsh.profile.bundles.includes(name)) {
     manifest.dsh.profile.bundles.push(name);
     writeJson(manifestPath(dir), manifest);
+  }
+  // 已知插件兼容性补丁（dsh-vault schema 修正）：匹配到旧写法时替换，消除工具注册报警
+  if (name === '@feiyang666/deepseekharnessdesktop-vault') {
+    applyVaultSchemaPatch(pkgDir);
   }
   return {
     ok: true,
@@ -370,4 +428,5 @@ module.exports = {
   uninstallPlugin,
   validatePkgSpec,
   removeLegacyPatchRow,
+  applyVaultSchemaPatch,
 };

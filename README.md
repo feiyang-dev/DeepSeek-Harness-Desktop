@@ -41,7 +41,7 @@
 
 ### 插件管理（独立页面 + 自定义安装）
 
-首页提供「安装插件」入口，进入独立插件管理页：
+首页提供「插件管理」入口（左侧导航），进入插件管理页：
 
 - **推荐插件**：一键安装 / 卸载由开发者制作的插件，当前提供两个（安装过程显示在「自定义安装」卡片的命令行日志中，完成后点「立即重启服务」即可生效）：
   - **[用量与消耗插件（dsh-usage）](https://github.com/feiyang-dev/dsh-usage-plugin)**：记录每次调用的 token 用量与缓存命中、按 DeepSeek 峰谷/基础价格计费、用量日历热力图、余额查询、CSV/JSON/PNG 导出
@@ -49,6 +49,16 @@
 - **自定义安装**：填写任意 npm 包名或安装命令（如 `@scope/plugin-name` 或 `npm install @scope/plugin-name`），客户端自动执行安装并注册到运行环境；命令行日志在「自定义安装」卡片内实时展示
 - **已安装列表**：展示全部已安装插件（版本 / 注册状态），可逐个卸载
 - 安装逻辑与官方 `dsh plugin add` 等价（npm 装入 profile + 注册 `dsh.profile.bundles`），**重新运行服务后生效**
+
+### 插件市场（扫描 GitHub 社区插件）
+
+左侧导航新增「插件市场」，扫描 GitHub 上带 `dsh-plugin` 话题的公开仓库（官方推荐的社区插件发现方式）：
+
+- **列表展示**：每个插件展示名称、作者、描述、star 数、主要语言、许可证，官方推荐插件置顶并标注「官方」
+- **搜索 / 分页**：支持按关键词搜索插件名称 / 描述 / 作者，结果分页浏览
+- **一键安装**：识别到仓库 `package.json` 的 npm 包名后即可一键安装（复用自定义安装的国内镜像自动切换流程）；未能识别到 npm 包的仓库标注「非 npm 包」，仅供参考
+- **已安装状态**：已安装的插件在市场中直接标记「已安装」及版本号
+- 扫描范围为 GitHub 公开 API，未登录时受 GitHub 限流限制（约 60 次/小时），市场页有失败提示与重试入口
 
 > 不喜欢桌面端也可以直接在命令行安装，效果等价：
 > ```bash
@@ -58,7 +68,7 @@
 
 ### 设置与在线更新
 
-引导页提供「设置」入口，进入独立设置页面：
+左侧导航「设置」进入设置页面：
 
 - **关于**：应用版本、更新日志、更新服务状态
 - **外观**：界面主题 **深色 / 浅色** 一键切换（持久化保存，选择后立即生效）
@@ -137,20 +147,60 @@ npm run dist
 node pack.js
 ```
 
+### macOS 打包
+
+> **为什么 Windows 上不能直接打包**：electron-builder 在非 macOS 主机上请求 mac 目标时会直接抛错
+> `Build for macOS is supported only on macOS`（见 `app-builder-lib/out/packager.js`）——dmg 依赖 macOS
+> 的 `hdiutil`、签名依赖 `codesign`，Windows 上无法交叉编译，也没有配置开关可以绕开。
+>
+> 但**不需要自己有一台 Mac**：仓库已内置 GitHub Actions 的 macOS 云端构建（见
+> `.github/workflows/build-mac.yml`），在 Windows 上推送即可自动产出 dmg。
+
+#### 方式一：GitHub Actions 云打包（推荐，无需 Mac）
+
+1. 把本仓库推到 GitHub；
+2. 触发构建（二选一）：
+   - 手动：仓库 **Actions** 页 → **Build macOS packages** → **Run workflow**；
+   - 自动：推送 `v*` 标签（如 `git tag v1.6.0 && git push --tags`）；
+3. 构建完成后在运行页的 **Artifacts** 下载 `dsh-desktop-mac`，内含：
+
+   ```
+   release/DeepSeek Harness 桌面版-<version>-mac-x64.dmg    （Intel）
+   release/DeepSeek Harness 桌面版-<version>-mac-arm64.dmg  （Apple Silicon）
+   对应的 .zip 同理
+   ```
+
+#### 方式二：本地 Mac 打包
+
+```bash
+npm install
+npm run dist:mac          # 生成 .dmg + .zip（本机架构）
+npm run pack:mac          # 仅生成 .app（调试用，不打包镜像）
+```
+
+要点：
+
+- **未签名构建**：`package.json` 的 `build.mac.identity` 已设为 `null`（未配置 Apple 开发者证书时跳过签名，直接产出可用的 dmg）。正式分发需要签名时，去掉该行并按 [electron-builder 文档](https://www.electron.build/code-signing) 配置 `CSC_LINK` / `CSC_KEY_PASSWORD`（或环境变量 `CSC_IDENTITY_AUTO_DISCOVERY`）。
+- **Gatekeeper**：未签名/未公证的 dmg 首次打开会被系统拦截，需右键点击 App →「打开」放行；正式分发建议做 Apple 公证（notarization）。
+- **图标**：`assets/icon-1024.png` 为 mac 打包用图标（electron-builder 自动转为 icns），由 `icon-256.png` 放大生成；如需高清可替换为 1024×1024 原图。
+- macOS 运行兼容已处理：进程清理用 `pgrep`/`lsof`、托盘单击恢复主界面、Homebrew 的 npm/pnpm 路径探测。
+
 ## 目录结构
 
 ```
 dsh-desktop/
-├── main.js          # 主进程（模式选择/进度状态机/安装/启动/窗口/托盘/清理/更新服务）
-├── preload.js       # 安全桥接（模式/进度/日志/状态/设置/更新 IPC）
-├── boot/            # 启动引导页（模式选择 + 设置页 + 进度条 + 日志面板）
+├── main.js              # 主进程（模式选择/进度状态机/安装/启动/窗口/托盘/清理/更新服务/插件市场 IPC）
+├── preload.js           # 安全桥接（模式/进度/日志/状态/设置/更新/插件市场 IPC）
+├── plugin-manager.js    # 插件管理器（安装/卸载/查询，纯 Node 逻辑）
+├── plugin-market.js     # 插件市场（扫描 GitHub topic:dsh-plugin，纯 Node 逻辑）
+├── boot/                # 启动引导页（首页 + 左侧导航 + 插件管理页 + 插件市场页 + 设置页 + 进度条 + 日志面板）
 │   ├── boot.html
 │   ├── boot.css
 │   └── boot.js
-├── assets/          # 打包资源（图标等）
-├── pack.js          # 交互式打包脚本
-├── start.bat        # 开发启动脚本
-└── package.json     # 依赖与打包配置
+├── assets/              # 打包资源（图标等）
+├── pack.js              # 交互式打包脚本
+├── start.bat            # 开发启动脚本
+└── package.json         # 依赖与打包配置
 ```
 
 ## 启动流程（状态机）
@@ -169,7 +219,8 @@ dsh-desktop/
 [首页：正在运行中] --独立新窗口打开 WebUI（http://127.0.0.1:3080）-->
    [停止运行] → 首页显示"已停止"，可重新运行或改选模式
    [重新运行] → 用上次所选模式重新走启动流程
-[插件管理页] 首页「安装插件」→ 推荐插件一键安装 / 自定义包名安装 / 已安装列表卸载
+[插件管理页] 左侧导航「插件管理」→ 推荐插件一键安装 / 自定义包名安装 / 已安装列表卸载
+[插件市场页] 左侧导航「插件市场」→ 扫描 GitHub topic:dsh-plugin → 搜索 / 浏览 / 一键安装
 [设置页] 首页「设置」→ 关于 / 通知 / 开发者选项 / 检查更新（自动检查 + 下载安装）
 ```
 

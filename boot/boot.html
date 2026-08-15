@@ -7,317 +7,372 @@
   <link rel="stylesheet" href="boot.css" />
 </head>
 <body>
-  <!-- ============ 首页（引导页 / 控制台） ============ -->
-  <div class="app" id="homeScreen">
-    <div class="brand">
-      <div class="logo-tile"><img class="logo-img" src="logo-black.svg" alt="DeepSeek Harness" /></div>
-      <div class="brand-text">
-        <h1 id="appTitleHome">DeepSeek Harness 桌面版</h1>
-        <p id="homeSubtitle">选择启动模式，开始使用</p>
+  <div class="shell" id="shell">
+    <!-- ============ 左侧导航 ============ -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-head">
+        <div class="sidebar-logo-tile"><img class="sidebar-logo-img" src="logo-black.svg" alt="DeepSeek Harness" /></div>
+        <div class="sidebar-appname" id="sidebarAppName">DeepSeek Harness</div>
       </div>
-      <button class="settings-entry plugin-entry" id="homePluginBtn" title="安装插件">
-        <span class="settings-entry-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        </span> 安装插件
-      </button>
-      <button class="settings-entry" id="settingsEntry" title="设置">
-        <span class="settings-entry-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-        </span> 设置
-      </button>
-    </div>
 
-    <!-- 运行状态条（running / stopped 时显示） -->
-    <div class="status-panel" id="statusPanel" hidden>
-      <div class="status-row">
-        <span class="status-dot" id="statusDot"></span>
-        <div class="status-text">
-          <div class="status-title" id="statusTitle">正在运行中</div>
-          <div class="status-desc" id="statusDesc"></div>
+      <nav class="sidebar-nav" id="sidebarNav">
+        <button class="nav-item active" id="navHome" data-view="home" title="首页">
+          <span class="nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          </span>
+          <span>首页</span>
+        </button>
+        <button class="nav-item" id="navPlugin" data-view="plugin" title="插件管理">
+          <span class="nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          </span>
+          <span>插件管理</span>
+        </button>
+        <button class="nav-item" id="navMarket" data-view="market" title="插件市场">
+          <span class="nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+          </span>
+          <span>插件市场</span>
+        </button>
+        <button class="nav-item" id="navSettings" data-view="settings" title="设置">
+          <span class="nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </span>
+          <span>设置</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="sidebar-status" id="sidebarStatus">
+          <span class="sidebar-dot" id="sidebarDot"></span>
+          <span id="sidebarStatusText">未运行</span>
         </div>
+        <div class="sidebar-version" id="sidebarVersion">v1.6.0</div>
       </div>
-      <div class="status-actions" id="statusActions">
-        <button class="status-btn primary" id="btnOpenMain">打开主界面</button>
-        <button class="status-btn danger" id="btnStopService">停止运行</button>
-        <button class="status-btn" id="btnRestartService">重新运行</button>
-      </div>
-    </div>
+    </aside>
 
-    <div class="mode-cards" id="modeCards">
-      <div class="mode-card" id="cardQuick" tabindex="0">
-        <div class="mode-badge">推荐</div>
-        <div class="mode-title">快速启动</div>
-        <div class="mode-desc">官方 npx @deepseek-ai/dsh web，最快开始使用</div>
-        <ul class="mode-features">
-          <li>按官方规范 npx 自动安装</li>
-          <li>自动选择最快国内镜像</li>
-          <li>无需安装额外工具</li>
-        </ul>
-        <div class="mode-btn">选择快速启动</div>
-      </div>
+    <!-- ============ 内容区 ============ -->
+    <main class="content" id="content">
+      <!-- ============ 首页（引导页 / 控制台） ============ -->
+      <div class="view" id="homeScreen">
+        <div class="page-head">
+          <h1 class="page-title" id="appTitleHome">DeepSeek Harness 桌面版</h1>
+          <p class="page-subtitle" id="homeSubtitle">选择启动模式，开始使用</p>
+        </div>
 
-      <div class="mode-card" id="cardSource" tabindex="0">
-        <div class="mode-title">源码完整安装</div>
-        <div class="mode-desc">git clone + pnpm install + build，适合开发调试</div>
-        <ul class="mode-features">
-          <li>git clone 官方仓库源码</li>
-          <li>pnpm install + pnpm run build</li>
-          <li>需要 git，pnpm 自动安装</li>
-        </ul>
-        <div class="mode-btn">选择源码安装</div>
-      </div>
-
-      <div class="mode-card" id="cardRepair" tabindex="0">
-        <div class="mode-title">本地修复</div>
-        <div class="mode-desc">应急抢修：强力清除本地数据后快速启动</div>
-        <ul class="mode-features">
-          <li>强力清除 ~/.dsh 全部本地数据</li>
-          <li>修复坏插件引用导致的启动崩溃</li>
-          <li>官方快速版 npx 直接启动</li>
-        </ul>
-        <div class="mode-btn">选择本地修复</div>
-      </div>
-    </div>
-
-    <p class="mode-hint" id="homeHint">请选择一种启动模式，本页面不会自动进入</p>
-  </div>
-
-  <!-- ============ 进度界面 ============ -->
-  <div class="app" id="progressScreen" hidden>
-    <div class="brand">
-      <div class="logo-tile"><img class="logo-img" src="logo-black.svg" alt="DeepSeek Harness" /></div>
-      <div class="brand-text">
-        <h1 id="appTitleProgress">DeepSeek Harness 桌面版</h1>
-        <p id="stageTag">正在初始化...</p>
-      </div>
-    </div>
-
-    <div class="stage-icon" id="stageIcon">
-      <div class="spinner"></div>
-    </div>
-
-    <div class="progress-wrap">
-      <div class="percent" id="percent">0%</div>
-      <div class="bar"><div class="bar-fill" id="barFill"></div></div>
-      <div class="step-indicator" id="stepIndicator" hidden>
-        <span class="step-pill" id="stepPill">步骤 1/8</span>
-        <span class="step-title" id="stepTitle">检测运行环境</span>
-      </div>
-      <div class="stage-text" id="stageText">正在准备启动环境...</div>
-      <div class="progress-detail" id="progressDetail"></div>
-      <div class="progress-hint" id="progressHint"></div>
-    </div>
-
-    <div class="log-panel" id="logPanel">
-      <div class="log-header" id="logHeader">
-        <span class="log-toggle" id="logToggle">▶</span>
-        <span>命令行日志</span>
-        <span class="log-badge" id="logBadge">0</span>
-      </div>
-      <div class="log-body" id="logBody" hidden>
-        <div class="log-hint">等待输出...</div>
-      </div>
-    </div>
-
-    <div class="error-tip" id="errorTip" hidden>
-      <span class="error-tip-icon">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      </span>
-      <span id="errorTipText">启动失败。可尝试「本地修复」强力清除本地数据后重新启动。</span>
-    </div>
-    <div class="footer" id="footer" hidden>
-      <button id="btnOpenNode">前往 nodejs.org 下载</button>
-      <button id="btnRepair" class="repair">选择本地修复</button>
-      <button id="btnRetry" class="primary">重新开始</button>
-      <button id="btnQuit">退出</button>
-    </div>
-  </div>
-
-  <!-- ============ 插件管理页（独立视图） ============ -->
-  <div class="app settings-app" id="pluginScreen" hidden>
-    <div class="settings-topbar">
-      <button class="settings-back" id="pluginBack" title="返回">
-        <span class="settings-back-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-        </span>
-      </button>
-      <div class="settings-title">插件管理</div>
-    </div>
-
-    <div class="settings-scroll plugin-scroll">
-      <div class="plugin-grid">
-        <!-- 推荐插件 -->
-        <section class="settings-card plugin-card">
-          <div class="settings-card-title-row">
-            <div class="settings-card-title">推荐插件</div>
-            <button class="settings-btn rec-refresh-btn" id="pluginDefRefreshBtn">刷新</button>
-          </div>
-          <div class="rec-list" id="recPluginList"></div>
-        </section>
-
-        <!-- 自定义安装 -->
-        <section class="settings-card plugin-card">
-          <div class="settings-card-title">自定义安装</div>
-          <div class="custom-install-row">
-            <input class="custom-input" id="customPkgInput" type="text"
-                   placeholder="npm 包名，如 @scope/plugin-name" spellcheck="false" />
-            <button class="settings-btn primary" id="customInstallBtn">安装</button>
-          </div>
-          <p class="custom-install-hint">支持填写包名，也支持「npm install 包名」形式。安装完成后点击「立即重启」即可生效。</p>
-          <div class="plugin-note" id="customNote" hidden></div>
-          <div class="custom-log" id="customLogPanel" hidden>
-            <div class="custom-log-header" id="customLogHeader">
-              <span class="log-toggle" id="customLogToggle">▶</span>
-              <span>命令行日志</span>
-              <span class="log-badge" id="customLogBadge">0</span>
-            </div>
-            <div class="custom-log-body" id="customLogBody" hidden>
-              <div class="log-hint">等待输出...</div>
+        <!-- 运行状态条（running / stopped 时显示） -->
+        <div class="status-panel" id="statusPanel" hidden>
+          <div class="status-row">
+            <span class="status-dot" id="statusDot"></span>
+            <div class="status-text">
+              <div class="status-title" id="statusTitle">正在运行中</div>
+              <div class="status-desc" id="statusDesc"></div>
             </div>
           </div>
-        </section>
-
-        <!-- 已安装插件 -->
-        <section class="settings-card plugin-card">
-          <div class="settings-card-title">已安装插件</div>
-          <div class="installed-list" id="installedList">
-            <div class="installed-empty" id="installedEmpty">暂无已安装插件</div>
+          <div class="status-actions" id="statusActions">
+            <button class="btn btn-primary" id="btnOpenMain">打开主界面</button>
+            <button class="btn btn-danger" id="btnStopService">停止运行</button>
+            <button class="btn" id="btnRestartService">重新运行</button>
           </div>
-        </section>
+        </div>
 
-        <!-- 生效提示：安装/卸载完成后显示"立即重启" -->
-        <section class="settings-card restart-hint-card plugin-card" id="restartHintCard" hidden>
-          <div class="settings-card-title">生效提示</div>
-          <div class="restart-hint">
-            <p>插件安装 / 卸载后需要<strong>重启服务</strong>才会加载。重启会短暂关闭当前 WebUI 窗口，完成后会自动重新打开。</p>
-            <button class="settings-btn primary" id="pluginRestartBtn">立即重启服务</button>
+        <div class="mode-cards" id="modeCards">
+          <div class="mode-card" id="cardQuick" tabindex="0">
+            <div class="mode-badge">推荐</div>
+            <div class="mode-title">快速启动</div>
+            <div class="mode-desc">官方 npx @deepseek-ai/dsh web，最快开始使用</div>
+            <ul class="mode-features">
+              <li>按官方规范 npx 自动安装</li>
+              <li>自动选择最快国内镜像</li>
+              <li>无需安装额外工具</li>
+            </ul>
+            <div class="mode-btn">选择快速启动</div>
           </div>
-        </section>
+
+          <div class="mode-card" id="cardSource" tabindex="0">
+            <div class="mode-title">源码完整安装</div>
+            <div class="mode-desc">git clone + pnpm install + build，适合开发调试</div>
+            <ul class="mode-features">
+              <li>git clone 官方仓库源码</li>
+              <li>pnpm install + pnpm run build</li>
+              <li>需要 git，pnpm 自动安装</li>
+            </ul>
+            <div class="mode-btn">选择源码安装</div>
+          </div>
+
+          <div class="mode-card" id="cardRepair" tabindex="0">
+            <div class="mode-title">本地修复</div>
+            <div class="mode-desc">应急抢修：强力清除本地数据后快速启动</div>
+            <ul class="mode-features">
+              <li>强力清除 ~/.dsh 全部本地数据</li>
+              <li>修复坏插件引用导致的启动崩溃</li>
+              <li>官方快速版 npx 直接启动</li>
+            </ul>
+            <div class="mode-btn">选择本地修复</div>
+          </div>
+        </div>
+
+        <p class="mode-hint" id="homeHint">请选择一种启动模式，本页面不会自动进入</p>
       </div>
-    </div>
-  </div>
 
-  <!-- ============ 设置页面（独立视图） ============ -->
-  <div class="app settings-app" id="settingsScreen" hidden>
-    <div class="settings-topbar">
-      <button class="settings-back" id="settingsBack" title="返回">
-        <span class="settings-back-icon">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-        </span>
-      </button>
-      <div class="settings-title">设置</div>
-    </div>
-
-    <div class="settings-scroll">
-      <!-- 关于 -->
-      <section class="settings-card">
-        <div class="settings-card-title">关于</div>
-        <div class="about-hero-mini">
-          <div class="about-logo-tile"><img class="about-logo-img" src="logo-black.svg" alt="DeepSeek Harness" /></div>
-          <div class="about-info">
-            <div class="about-name" id="setAppName">DeepSeek Harness 桌面版</div>
-            <div class="about-version">版本 <span id="setVersion">-</span></div>
-            <div class="about-tagline" id="setTagline">DeepSeek Harness 官方 Web UI 桌面客户端</div>
-            <div class="about-base" id="setUpdateBase"></div>
+      <!-- ============ 进度界面（全屏覆盖，无侧栏） ============ -->
+      <div class="view progress-view" id="progressScreen" hidden>
+        <div class="brand">
+          <div class="logo-tile"><img class="logo-img" src="logo-black.svg" alt="DeepSeek Harness" /></div>
+          <div class="brand-text">
+            <h1 id="appTitleProgress">DeepSeek Harness 桌面版</h1>
+            <p id="stageTag">正在初始化...</p>
           </div>
         </div>
-        <div class="settings-changelog" id="setChangelog">暂无更新日志</div>
-      </section>
 
-      <!-- 外观（主题） -->
-      <section class="settings-card">
-        <div class="settings-card-title">外观</div>
-        <div class="settings-row">
-          <div class="settings-row-text">
-            <div>界面主题</div>
-            <div class="settings-desc">切换深色 / 浅色界面，选择后立即生效并保存</div>
-          </div>
-          <div class="theme-toggle" id="themeToggle">
-            <button class="settings-btn" data-theme="dark" id="themeDarkBtn" title="深色">
-              <span class="theme-icon">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-              </span>
-              深色
-            </button>
-            <button class="settings-btn" data-theme="light" id="themeLightBtn" title="浅色">
-              <span class="theme-icon">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-              </span>
-              浅色
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <!-- 通知 -->
-      <section class="settings-card">
-        <div class="settings-card-title">通知</div>
-        <div class="settings-row">
-          <div class="settings-row-text">
-            <div>新版本通知</div>
-            <div class="settings-desc">发现新版本时弹出系统通知提醒</div>
-          </div>
-          <label class="settings-switch">
-            <input type="checkbox" id="setNotifyToggle" />
-            <span class="slider"></span>
-          </label>
-        </div>
-      </section>
-
-      <!-- 开发者选项 -->
-      <section class="settings-card">
-        <div class="settings-card-title">开发者选项</div>
-        <div class="settings-row">
-          <div class="settings-row-text">
-            <div>开启开发者选项模式</div>
-            <div class="settings-desc">选择「快速启动」时分离运行「服务端后端」与「浏览器端热更 watcher（pnpm dev:web）」两个进程：客户端插件源码改动后自动重建并热更，无需重启服务即可迭代前端。需先完成一次「源码完整安装」，开关对下次启动生效。</div>
-          </div>
-          <label class="settings-switch">
-            <input type="checkbox" id="setDevModeToggle" />
-            <span class="slider"></span>
-          </label>
-        </div>
-      </section>
-
-      <!-- 运行环境（dsh 版本） -->
-      <section class="settings-card">
-        <div class="settings-card-title">运行环境（dsh）</div>
-        <div class="settings-row">
-          <div class="settings-row-text">
-            <div class="update-status" id="setDshVersion">当前版本：-</div>
-            <div class="settings-desc">快速启动使用 npm exec（npx）方式启动：每次启动都会自动解析并更新到官方 registry 的最新版本，官方发布新版后下次启动自动生效，无需手动处理</div>
-          </div>
-          <button class="settings-btn" id="setDshCheckBtn">检查最新版本</button>
-        </div>
-        <div class="plugin-note" id="setDshVersionNote" hidden></div>
-      </section>
-
-      <!-- 检查更新 -->
-      <section class="settings-card">
-        <div class="settings-card-title">检查更新</div>
-        <div class="settings-row">
-          <div class="settings-row-text">
-            <div class="update-status" id="setUpdateStatus">正在检查更新...</div>
-            <div class="settings-desc" id="setUpdateHint"></div>
-          </div>
-          <button class="settings-btn" id="setCheckBtn">立即检查</button>
+        <div class="stage-icon" id="stageIcon">
+          <div class="spinner"></div>
         </div>
 
-        <div class="update-info" id="setUpdateInfo" hidden>
-          <div class="update-version">发现新版本 v<span id="setNewVersion"></span></div>
-          <div class="update-notes" id="setNewNotes"></div>
-          <div class="update-actions">
-            <button class="settings-btn primary" id="setDownloadBtn">
-              <span id="setDownloadBtnText">下载并安装</span>
-            </button>
+        <div class="progress-wrap">
+          <div class="percent" id="percent">0%</div>
+          <div class="bar"><div class="bar-fill" id="barFill"></div></div>
+          <div class="step-indicator" id="stepIndicator" hidden>
+            <span class="step-pill" id="stepPill">步骤 1/8</span>
+            <span class="step-title" id="stepTitle">检测运行环境</span>
           </div>
-          <div class="update-progress" id="setDownloadProgress" hidden>
-            <div class="update-bar"><div class="update-bar-fill" id="setDownloadFill"></div></div>
-            <div class="update-progress-text" id="setDownloadText">0%</div>
+          <div class="stage-text" id="stageText">正在准备启动环境...</div>
+          <div class="progress-detail" id="progressDetail"></div>
+          <div class="progress-hint" id="progressHint"></div>
+        </div>
+
+        <div class="log-panel" id="logPanel">
+          <div class="log-header" id="logHeader">
+            <span class="log-toggle" id="logToggle">▶</span>
+            <span>命令行日志</span>
+            <span class="log-badge" id="logBadge">0</span>
+          </div>
+          <div class="log-body" id="logBody" hidden>
+            <div class="log-hint">等待输出...</div>
           </div>
         </div>
-      </section>
-    </div>
+
+        <div class="error-tip" id="errorTip" hidden>
+          <span class="error-tip-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          </span>
+          <span id="errorTipText">启动失败。可尝试「本地修复」强力清除本地数据后重新启动。</span>
+        </div>
+        <div class="footer" id="footer" hidden>
+          <button id="btnOpenNode">前往 nodejs.org 下载</button>
+          <button id="btnRepair" class="repair">选择本地修复</button>
+          <button id="btnRetry" class="primary">重新开始</button>
+          <button id="btnQuit">退出</button>
+        </div>
+      </div>
+
+      <!-- ============ 插件管理页 ============ -->
+      <div class="view" id="pluginScreen" hidden>
+        <div class="page-head">
+          <h1 class="page-title">插件管理</h1>
+          <p class="page-subtitle">管理已安装插件，或通过包名自定义安装</p>
+        </div>
+
+        <div class="page-body plugin-body">
+          <!-- 自定义安装 -->
+          <section class="panel plugin-card">
+            <div class="panel-title">自定义安装</div>
+            <div class="custom-install-row">
+              <input class="custom-input" id="customPkgInput" type="text"
+                     placeholder="npm 包名，如 @scope/plugin-name" spellcheck="false" />
+              <button class="btn btn-primary" id="customInstallBtn">安装</button>
+            </div>
+            <p class="custom-install-hint">支持填写包名，也支持「npm install 包名」形式。安装完成后点击「立即重启」即可生效。</p>
+            <div class="plugin-note" id="customNote" hidden></div>
+            <div class="custom-log" id="customLogPanel" hidden>
+              <div class="custom-log-header" id="customLogHeader">
+                <span class="log-toggle" id="customLogToggle">▶</span>
+                <span>命令行日志</span>
+                <span class="log-badge" id="customLogBadge">0</span>
+              </div>
+              <div class="custom-log-body" id="customLogBody" hidden>
+                <div class="log-hint">等待输出...</div>
+              </div>
+            </div>
+          </section>
+
+          <!-- 推荐插件 -->
+          <section class="panel plugin-card">
+            <div class="panel-title-row">
+              <span class="panel-title">推荐插件</span>
+              <button class="btn btn-sm rec-refresh-btn" id="pluginDefRefreshBtn">刷新</button>
+            </div>
+            <div class="rec-list" id="recPluginList"></div>
+          </section>
+
+          <!-- 已安装插件 -->
+          <section class="panel plugin-card">
+            <div class="panel-title">已安装插件</div>
+            <div class="installed-list" id="installedList">
+              <div class="installed-empty" id="installedEmpty">暂无已安装插件</div>
+            </div>
+          </section>
+
+          <!-- 生效提示 -->
+          <section class="panel plugin-card restart-hint-card" id="restartHintCard" hidden>
+            <div class="restart-hint">
+              <p>插件安装 / 卸载后需要<strong>重启服务</strong>才会加载。重启会短暂关闭当前 WebUI 窗口，完成后会自动重新打开。</p>
+              <button class="btn btn-primary" id="pluginRestartBtn">立即重启服务</button>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- ============ 插件市场页 ============ -->
+      <div class="view" id="marketScreen" hidden>
+        <div class="page-head">
+          <h1 class="page-title">插件市场</h1>
+          <p class="page-subtitle">扫描 GitHub 上带 <code>dsh-plugin</code> 话题的插件仓库，一键安装</p>
+        </div>
+
+        <div class="market-toolbar">
+          <div class="market-search">
+            <input class="market-input" id="marketSearchInput" type="text"
+                   placeholder="搜索插件名称 / 描述 / 作者" spellcheck="false" />
+            <button class="btn btn-primary" id="marketSearchBtn">搜索</button>
+          </div>
+          <div class="market-meta">
+            <span class="market-total" id="marketTotal">共 0 个插件</span>
+            <button class="btn btn-sm" id="marketRefreshBtn">刷新</button>
+          </div>
+        </div>
+
+        <div class="market-list" id="marketList">
+          <div class="market-loading" id="marketLoading">正在从 GitHub 加载插件列表…</div>
+        </div>
+
+        <div class="market-empty" id="marketEmpty" hidden>没有找到匹配的插件</div>
+
+        <div class="market-pager" id="marketPager" hidden>
+          <button class="btn btn-sm" id="marketPrevBtn">上一页</button>
+          <span class="market-page" id="marketPageInfo">1 / 1</span>
+          <button class="btn btn-sm" id="marketNextBtn">下一页</button>
+        </div>
+      </div>
+
+      <!-- ============ 设置页 ============ -->
+      <div class="view" id="settingsScreen" hidden>
+        <div class="page-head">
+          <h1 class="page-title">设置</h1>
+          <p class="page-subtitle" id="setTagline">DeepSeek Harness 官方 Web UI 桌面客户端</p>
+        </div>
+
+        <div class="page-body settings-body">
+          <!-- 关于 -->
+          <section class="panel">
+            <div class="panel-title">关于</div>
+            <div class="about-hero-mini">
+              <div class="about-logo-tile"><img class="about-logo-img" src="logo-black.svg" alt="DeepSeek Harness" /></div>
+              <div class="about-info">
+                <div class="about-name" id="setAppName">DeepSeek Harness 桌面版</div>
+                <div class="about-version">版本 <span id="setVersion">-</span></div>
+                <div class="about-base" id="setUpdateBase"></div>
+              </div>
+            </div>
+            <div class="settings-changelog" id="setChangelog">暂无更新日志</div>
+          </section>
+
+          <!-- 外观（主题） -->
+          <section class="panel">
+            <div class="panel-title">外观</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div>界面主题</div>
+                <div class="settings-desc">切换深色 / 浅色界面，选择后立即生效并保存</div>
+              </div>
+              <div class="theme-toggle" id="themeToggle">
+                <button class="btn" data-theme="dark" id="themeDarkBtn" title="深色">
+                  <span class="theme-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+                  </span>
+                  深色
+                </button>
+                <button class="btn" data-theme="light" id="themeLightBtn" title="浅色">
+                  <span class="theme-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+                  </span>
+                  浅色
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <!-- 通知 -->
+          <section class="panel">
+            <div class="panel-title">通知</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div>新版本通知</div>
+                <div class="settings-desc">发现新版本时弹出系统通知提醒</div>
+              </div>
+              <label class="settings-switch">
+                <input type="checkbox" id="setNotifyToggle" />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </section>
+
+          <!-- 开发者选项 -->
+          <section class="panel">
+            <div class="panel-title">开发者选项</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div>开启开发者选项模式</div>
+                <div class="settings-desc">选择「快速启动」时分离运行「服务端后端」与「浏览器端热更 watcher（pnpm dev:web）」两个进程，改动客户端插件源码后自动重建并热更。需先完成一次「源码完整安装」，开关对下次启动生效。</div>
+              </div>
+              <label class="settings-switch">
+                <input type="checkbox" id="setDevModeToggle" />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </section>
+
+          <!-- 运行环境（dsh 版本） -->
+          <section class="panel">
+            <div class="panel-title">运行环境（dsh）</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="update-status" id="setDshVersion">当前版本：-</div>
+                <div class="settings-desc">快速启动使用 npm exec（npx）方式：每次启动都会自动解析并更新到官方 registry 的最新版本</div>
+              </div>
+              <button class="btn" id="setDshCheckBtn">检查最新版本</button>
+            </div>
+            <div class="plugin-note" id="setDshVersionNote" hidden></div>
+          </section>
+
+          <!-- 检查更新 -->
+          <section class="panel">
+            <div class="panel-title">检查更新</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="update-status" id="setUpdateStatus">正在检查更新...</div>
+                <div class="settings-desc" id="setUpdateHint"></div>
+              </div>
+              <button class="btn" id="setCheckBtn">立即检查</button>
+            </div>
+
+            <div class="update-info" id="setUpdateInfo" hidden>
+              <div class="update-version">发现新版本 v<span id="setNewVersion"></span></div>
+              <div class="update-notes" id="setNewNotes"></div>
+              <div class="update-actions">
+                <button class="btn btn-primary" id="setDownloadBtn">
+                  <span id="setDownloadBtnText">下载并安装</span>
+                </button>
+              </div>
+              <div class="update-progress" id="setDownloadProgress" hidden>
+                <div class="update-bar"><div class="update-bar-fill" id="setDownloadFill"></div></div>
+                <div class="update-progress-text" id="setDownloadText">0%</div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
   </div>
 
   <!-- ============ 更新提示弹窗 ============ -->
@@ -340,8 +395,8 @@
         <div class="update-modal-progress-text" id="umText">0%</div>
       </div>
       <div class="update-modal-footer">
-        <button class="settings-btn" id="umLaterBtn">稍后再说</button>
-        <button class="settings-btn primary" id="umActionBtn">
+        <button class="btn" id="umLaterBtn">稍后再说</button>
+        <button class="btn btn-primary" id="umActionBtn">
           <span id="umActionText">下载并安装</span>
         </button>
       </div>

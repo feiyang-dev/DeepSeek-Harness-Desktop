@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const pluginMgr = require('./plugin-manager.js');
+const pluginMarket = require('./plugin-market.js');
 
 // ============================================================
 //  全局状态
@@ -306,6 +307,17 @@ async function findNpmCli() {
     const c2 = path.join(path.dirname(npmCmd), 'node_modules', 'npm', 'bin', 'npm-cli.js');
     if (fs.existsSync(c2)) return c2;
   }
+  // macOS：Homebrew 安装的 node/npm 是符号链接（/opt/homebrew/bin/npm →
+  // ../lib/node_modules/npm/bin/npm-cli.js），上面两种布局都找不到。
+  // 用 `npm root -g` 拿到全局 node_modules 真实目录再定位 npm-cli.js。
+  if (process.platform === 'darwin' && npmCmd) {
+    const rootR = await runCommand(nodeExe, [npmCmd, 'root', '-g'], null, () => {});
+    const root = String(rootR.out || '').trim().split(/\r?\n/).pop().trim();
+    if (root) {
+      const c3 = path.join(root, 'npm', 'bin', 'npm-cli.js');
+      if (fs.existsSync(c3)) return c3;
+    }
+  }
   return null;
 }
 
@@ -365,8 +377,8 @@ function selectMode(mode) {
 // 覆盖三种启动方式：npx 快速版、全局安装版、源码 pnpm dsh web，以及开发者模式的 dev:web 热更 watcher。
 async function killDshNodeProcesses() {
   return new Promise((resolve) => {
-    if (!isWin) { resolve(); return; }
-    const ps = `
+    if (isWin) {
+      const ps = `
 $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
   $_.CommandLine -match '@deepseek-ai[\\\\/]dsh' -or
   $_.CommandLine -match 'dsh[\\\\/]lib[\\\\/]bin' -or
@@ -377,16 +389,34 @@ $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object 
 }
 foreach ($p in $procs) { Write-Output $p.ProcessId }
 `;
-    execFile('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true, timeout: 10000 }, (err, stdout) => {
-      if (err) { resolve(); return; }
-      const pids = String(stdout).split(/\r?\n/).map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0 && n !== process.pid);
-      if (pids.length === 0) { resolve(); return; }
-      logLine('[诊断] killDshNodeProcesses 将终止: ' + pids.join(','));
-      const kills = pids.map((pid) => new Promise((res) => {
-        execFile('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true }, () => res());
-      }));
-      Promise.all(kills).then(() => resolve());
-    });
+      execFile('powershell.exe', ['-NoProfile', '-Command', ps], { windowsHide: true, timeout: 10000 }, (err, stdout) => {
+        if (err) { resolve(); return; }
+        const pids = String(stdout).split(/\r?\n/).map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0 && n !== process.pid);
+        if (pids.length === 0) { resolve(); return; }
+        logLine('[诊断] killDshNodeProcesses 将终止: ' + pids.join(','));
+        const kills = pids.map((pid) => new Promise((res) => {
+          execFile('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true }, () => res());
+        }));
+        Promise.all(kills).then(() => resolve());
+      });
+      return;
+    }
+    if (process.platform === 'darwin') {
+      // macOS：pgrep -f 匹配 dsh 相关 node 进程命令行后逐个 kill -9
+      const pattern = '(@deepseek-ai\\\\/dsh|dsh\\\\/lib\\\\/bin|bin\\\\.ts web|dev:web)';
+      execFile('pgrep', ['-f', pattern], { windowsHide: true }, (err, stdout) => {
+        if (err) { resolve(); return; }
+        const pids = String(stdout).split(/\r?\n/).map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0 && n !== process.pid);
+        if (pids.length === 0) { resolve(); return; }
+        logLine('[诊断] killDshNodeProcesses 将终止: ' + pids.join(','));
+        const kills = pids.map((pid) => new Promise((res) => {
+          execFile('kill', ['-9', String(pid)], {}, () => res());
+        }));
+        Promise.all(kills).then(() => resolve());
+      });
+      return;
+    }
+    resolve();
   });
 }
 
@@ -622,8 +652,12 @@ function sourceRepoPath() {
 async function findPnpmCli() {
   const prefix = await findNpmPrefix();
   if (prefix) {
+    // 标准布局：<prefix>/node_modules/pnpm/bin/pnpm.cjs
     const cand = path.join(prefix, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs');
     if (fs.existsSync(cand)) return cand;
+    // macOS Homebrew 布局：<prefix>/lib/node_modules/pnpm/bin/pnpm.cjs
+    const brewCand = path.join(prefix, 'lib', 'node_modules', 'pnpm', 'bin', 'pnpm.cjs');
+    if (fs.existsSync(brewCand)) return brewCand;
   }
   const pnpmPath = await which('pnpm');
   if (pnpmPath) {
@@ -666,6 +700,11 @@ async function sourceInstall(nodeExe) {
     }
     const newPrefix = await findNpmPrefix();
     pnpmCli = newPrefix ? path.join(newPrefix, 'node_modules', 'pnpm', 'bin', 'pnpm.cjs') : null;
+    if ((!pnpmCli || !fs.existsSync(pnpmCli)) && newPrefix) {
+      // macOS Homebrew 布局兜底：<prefix>/lib/node_modules/pnpm/bin/pnpm.cjs
+      const brewCand = path.join(newPrefix, 'lib', 'node_modules', 'pnpm', 'bin', 'pnpm.cjs');
+      if (fs.existsSync(brewCand)) pnpmCli = brewCand;
+    }
     if (!pnpmCli || !fs.existsSync(pnpmCli)) {
       return { ok: false, error: 'pnpm 安装完成但找不到 pnpm.cjs 入口' };
     }
@@ -1022,24 +1061,41 @@ async function quitApp() {
 // 终止占用指定端口的进程（启动前清理旧服务，保证干净启动）
 async function killProcessOnPort(checkPort) {
   return new Promise((resolve) => {
-    if (!isWin) { resolve(false); return; }
-    execFile('netstat', ['-ano', '-p', 'TCP'], { windowsHide: true }, (err, stdout) => {
-      if (err) { resolve(false); return; }
-      const lines = String(stdout).split(/\r?\n/);
-      const pids = new Set();
-      for (const line of lines) {
-        // 匹配形如 "  TCP    127.0.0.1:3080    0.0.0.0:0    LISTENING    19220"
-        // 或 IPv6 "  TCP    [::]:3080    0.0.0.0:0    LISTENING    19220"
-        const m = line.match(/TCP\s+(?:\[[0-9a-f:.]+\]|\S+):(\d+)\s+\S+\s+(?:LISTENING|ESTABLISHED)\s+(\d+)\s*$/i);
-        if (m && Number(m[1]) === checkPort) pids.add(Number(m[2]));
-      }
-      if (pids.size === 0) { resolve(false); return; }
-      logLine('[诊断] killProcessOnPort 将终止端口 ' + checkPort + ' 的进程: ' + [...pids].join(','));
-      const killAll = [...pids].map((pid) => new Promise((res) => {
-        execFile('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true }, () => res());
-      }));
-      Promise.all(killAll).then(() => resolve(true));
-    });
+    if (isWin) {
+      execFile('netstat', ['-ano', '-p', 'TCP'], { windowsHide: true }, (err, stdout) => {
+        if (err) { resolve(false); return; }
+        const lines = String(stdout).split(/\r?\n/);
+        const pids = new Set();
+        for (const line of lines) {
+          // 匹配形如 "  TCP    127.0.0.1:3080    0.0.0.0:0    LISTENING    19220"
+          // 或 IPv6 "  TCP    [::]:3080    0.0.0.0:0    LISTENING    19220"
+          const m = line.match(/TCP\s+(?:\[[0-9a-f:.]+\]|\S+):(\d+)\s+\S+\s+(?:LISTENING|ESTABLISHED)\s+(\d+)\s*$/i);
+          if (m && Number(m[1]) === checkPort) pids.add(Number(m[2]));
+        }
+        if (pids.size === 0) { resolve(false); return; }
+        logLine('[诊断] killProcessOnPort 将终止端口 ' + checkPort + ' 的进程: ' + [...pids].join(','));
+        const killAll = [...pids].map((pid) => new Promise((res) => {
+          execFile('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true }, () => res());
+        }));
+        Promise.all(killAll).then(() => resolve(true));
+      });
+      return;
+    }
+    if (process.platform === 'darwin') {
+      // macOS：lsof -ti tcp:<port> 取占用端口的 PID 后 kill -9
+      execFile('lsof', ['-ti', `tcp:${checkPort}`], { windowsHide: true }, (err, stdout) => {
+        if (err) { resolve(false); return; }
+        const pids = String(stdout).split(/\r?\n/).map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0);
+        if (pids.length === 0) { resolve(false); return; }
+        logLine('[诊断] killProcessOnPort 将终止端口 ' + checkPort + ' 的进程: ' + pids.join(','));
+        const killAll = pids.map((pid) => new Promise((res) => {
+          execFile('kill', ['-9', String(pid)], {}, () => res());
+        }));
+        Promise.all(killAll).then(() => resolve(true));
+      });
+      return;
+    }
+    resolve(false);
   });
 }
 
@@ -1308,15 +1364,15 @@ function createBootWindow() {
   // 窗口背景色跟随主题，避免切换/加载时闪白
   const theme = loadAppConfig().theme === 'light' ? 'light' : 'dark';
   bootWindow = new BrowserWindow({
-    width: 780,
-    height: 620,
+    width: 960,
+    height: 660,
     resizable: true,
-    minWidth: 680,
-    minHeight: 540,
+    minWidth: 760,
+    minHeight: 560,
     autoHideMenuBar: true,
     title: APP_NAME,
     icon: appIcon(256),
-    backgroundColor: theme === 'light' ? '#f6f8fa' : '#0d1117',
+    backgroundColor: theme === 'light' ? '#f5f5f5' : '#111111',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -1405,6 +1461,10 @@ function createTray() {
   tray.setToolTip(APP_NAME);
   refreshTrayMenu();
   tray.on('double-click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
+  // macOS 托盘不触发 double-click，改用单击恢复主界面
+  if (process.platform === 'darwin') {
+    tray.on('click', () => { if (mainWindow) { mainWindow.show(); mainWindow.focus(); } });
+  }
 }
 
 // 根据服务状态重建托盘菜单（运行中可停止，停止后可重新运行）
@@ -2149,4 +2209,60 @@ async function doUninstallPlugin(pkg) {
 ipcMain.handle('plugin:uninstall', async (e, payload) => {
   const input = payload && typeof payload === 'object' ? payload.pkg : payload;
   return await doUninstallPlugin(input || null);
+});
+
+// ============================================================
+//  插件市场（扫描 GitHub topic:dsh-plugin 的公开仓库）
+// ============================================================
+
+// 供渲染进程查询市场条目是否已安装（把已装的 npm 包名映射成集合）
+async function marketInstalledMap() {
+  const map = {};
+  try {
+    const list = pluginMgr.listInstalledPlugins(pluginMgr.profileDir());
+    for (const p of list) map[p.pkg] = p;
+  } catch (e) { /* ignore */ }
+  return map;
+}
+
+// 插件市场：列表（搜索 GitHub topic:dsh-plugin）
+ipcMain.handle('plugin:market-list', async (e, payload) => {
+  payload = payload && typeof payload === 'object' ? payload : {};
+  try {
+    const result = await pluginMarket.listMarket({
+      keyword: payload.keyword || '',
+      page: payload.page || 1,
+      perPage: payload.perPage || pluginMarket.PER_PAGE,
+      resolvePkgNames: payload.resolvePkgNames !== false,
+    });
+    if (!result.ok) return result;
+    // 叠加已安装状态
+    const installedMap = await marketInstalledMap();
+    result.list = result.list.map((item) => {
+      if (item.pkgName && installedMap[item.pkgName]) {
+        const ins = installedMap[item.pkgName];
+        return {
+          ...item,
+          installed: ins.installed,
+          installedVersion: ins.version,
+          bundled: !!ins.bundled,
+        };
+      }
+      return { ...item, installed: false, installedVersion: '', bundled: false };
+    });
+    return result;
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+// 插件市场：一键安装（按 npm 包名走统一安装入口）
+ipcMain.handle('plugin:market-install', async (e, payload) => {
+  const pkg = payload && typeof payload === 'object' ? payload.pkg : payload;
+  const name = String(pkg || '').trim();
+  if (!name) {
+    broadcast('plugin:event', { stage: 'error', message: '未识别到可安装的包名' });
+    return { ok: false, error: '未识别到可安装的包名' };
+  }
+  return await doInstallPlugin(name);
 });
