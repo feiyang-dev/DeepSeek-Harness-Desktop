@@ -410,57 +410,82 @@ async function uninstallPlugin(options) {
   const manifest = readManifest(dir);
   if (!manifest) return { ok: false, error: 'profile 不存在，无需卸载' };
 
-  // 1) 移除 bundles 注册
-  const bundles = (manifest.dsh && manifest.dsh.profile && manifest.dsh.profile.bundles) || [];
-  if (bundles.includes(name)) {
-    bundles.splice(bundles.indexOf(name), 1);
-    writeJson(manifestPath(dir), manifest);
+  // 卸载目标集合：请求的包名 + 其旧名/新名别名（若已安装）。
+  // 关键：推荐卡片的包名可能是「新包名」，但用户实际装的是「旧包名」，
+  // 若只卸载新包名会"假卸载"（新包不存在但返回 ok）。这里把所有
+  // 已安装的关联包名一并清理，保证真正卸载干净。
+  const targets = [name];
+  const alias = legacyAliasFor(name);
+  if (alias) {
+    const aliasManifest = readManifest(dir);
+    const aliasPkgDir = installedPkgDir(dir, alias);
+    const aliasInDeps = !!(aliasManifest && aliasManifest.dependencies && aliasManifest.dependencies[alias]);
+    if (aliasPkgDir || aliasInDeps) targets.push(alias);
   }
 
-  // 2) 移除 manifest dependencies 中的声明（若存在）
-  if (manifest.dependencies && manifest.dependencies[name]) {
-    delete manifest.dependencies[name];
-    writeJson(manifestPath(dir), manifest);
+  const results = { removedDirs: [], legacyRowRemoved: 0, lockCleaned: 0 };
+  let anyError = null;
+
+  for (const target of targets) {
+    // 1) 移除 bundles 注册
+    const bundles = (manifest.dsh && manifest.dsh.profile && manifest.dsh.profile.bundles) || [];
+    if (bundles.includes(target)) {
+      bundles.splice(bundles.indexOf(target), 1);
+      writeJson(manifestPath(dir), manifest);
+    }
+
+    // 2) 移除 manifest dependencies 中的声明（若存在）
+    if (manifest.dependencies && manifest.dependencies[target]) {
+      delete manifest.dependencies[target];
+      writeJson(manifestPath(dir), manifest);
+    }
+
+    // 3) 剥离 package-lock.json 中该包的引用（避免与 manifest 不同步引发 npm 卡顿）
+    results.lockCleaned += scrubLockfile(dir, target) ? 1 : 0;
+
+    // 4) 清理 cordis.patch.yml 中手动接线遗留的插件行
+    results.legacyRowRemoved += removeLegacyPatchRow(patchPath(dir), target) ? 1 : 0;
+
+    // 5) 直接删除实体目录（顶层 node_modules/<pkg> 与 .pnpm 虚拟目录）
+    results.removedDirs.push(...removeResidualNodeModules(dir, target));
   }
 
-  // 3) 剥离 package-lock.json 中该包的引用（避免与 manifest 不同步引发 npm 卡顿）
-  const lockCleaned = scrubLockfile(dir, name);
-
-  // 4) 清理 cordis.patch.yml 中手动接线遗留的插件行
-  const legacyRowRemoved = removeLegacyPatchRow(patchPath(dir), name);
-
-  // 5) 直接删除实体目录（顶层 node_modules/<pkg> 与 .pnpm 虚拟目录）
-  const removedDirs = removeResidualNodeModules(dir, name);
-
-  // 6) 兜底：目录可能被进程占用删除失败，用 npm uninstall --offline
-  //    （离线模式不走网络，仅本地清理）再尝试一次。
-  const stillThere = fs.existsSync(path.join(dir, 'node_modules', ...String(name).split('/')));
+  // 6) 兜底：实体目录仍残留（可能被占用），用 npm uninstall --offline 再试
+  const stillThere = targets.some((t) =>
+    fs.existsSync(path.join(dir, 'node_modules', ...String(t).split('/')))
+  );
   let npmFallback = null;
   if (stillThere && options.nodeExe && options.npmCli) {
     const env = {
       ...(options.env || process.env),
       npm_config_ignore_scripts: 'true',
     };
-    const args = ['uninstall', name, '--no-audit', '--no-fund', '--offline', '--prefer-offline'];
-    if (options.registry) args.push('--registry', options.registry);
-    npmFallback = await runCommand(
-      options.nodeExe,
-      [options.npmCli, ...args],
-      { cwd: dir, env },
-      options.onOut
-    );
-    const again = removeResidualNodeModules(dir, name);
-    removedDirs.push(...again);
+    for (const target of targets) {
+      const args = ['uninstall', target, '--no-audit', '--no-fund', '--offline', '--prefer-offline'];
+      if (options.registry) args.push('--registry', options.registry);
+      npmFallback = await runCommand(
+        options.nodeExe,
+        [options.npmCli, ...args],
+        { cwd: dir, env },
+        options.onOut
+      );
+      if (npmFallback && npmFallback.code !== 0) anyError = npmFallback.error || 'npm uninstall 失败';
+      results.removedDirs.push(...removeResidualNodeModules(dir, target));
+    }
   }
 
-  const finalStillThere = fs.existsSync(path.join(dir, 'node_modules', ...String(name).split('/')));
+  const finalStillThere = targets.some((t) =>
+    fs.existsSync(path.join(dir, 'node_modules', ...String(t).split('/')))
+  );
   return {
     ok: !finalStillThere,
     pkg: name,
-    legacyRowRemoved,
-    lockCleaned,
-    removedDirs,
+    uninstalledPkgs: targets,
+    legacyRowRemoved: results.legacyRowRemoved,
+    lockCleaned: results.lockCleaned,
+    removedDirs: results.removedDirs,
     npmFallbackUsed: !!npmFallback,
+    error: anyError || (finalStillThere ? '插件目录可能被占用，删除失败' : null),
   };
 }
 

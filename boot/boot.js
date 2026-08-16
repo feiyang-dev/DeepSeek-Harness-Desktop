@@ -108,6 +108,14 @@ const setNotifyToggle = document.getElementById('setNotifyToggle');
 const themeDarkBtn = document.getElementById('themeDarkBtn');
 const themeLightBtn = document.getElementById('themeLightBtn');
 const themeSystemBtn = document.getElementById('themeSystemBtn');
+// 侧边栏快捷控件
+const sidebarLangBtn = document.getElementById('sidebarLangBtn');
+const sidebarLangText = document.getElementById('sidebarLangText');
+const sidebarThemeBtn = document.getElementById('sidebarThemeBtn');
+const sidebarThemeIcon = document.getElementById('sidebarThemeIcon');
+const sidebarThemeText = document.getElementById('sidebarThemeText');
+const sidebarRepo = document.getElementById('sidebarRepo');
+const sidebarRepoText = document.getElementById('sidebarRepoText');
 const setDevModeToggle = document.getElementById('setDevModeToggle');
 const setDshVersion = document.getElementById('setDshVersion');
 const setDshCheckBtn = document.getElementById('setDshCheckBtn');
@@ -132,14 +140,14 @@ let pluginBusy = false;
 let uptimeTimer = null;
 
 const STAGE_LABELS = {
-  init: '正在初始化',
-  detect: '检测本地环境',
-  install: '安装运行环境',
-  start: '启动服务中',
-  ready: '启动完成',
-  running: '正在运行中',
-  stopped: '服务已停止',
-  error: '出现问题',
+  init: () => t('stageInit'),
+  detect: () => t('stageDetect'),
+  install: () => t('stageInstall'),
+  start: () => t('stageStart'),
+  ready: () => t('stageReady'),
+  running: () => t('statusRunning'),
+  stopped: () => t('statusStopped'),
+  error: () => t('stageError'),
 };
 
 // ============ 日志面板 ============
@@ -203,7 +211,7 @@ function syncNavActive(name) {
 // 侧栏服务状态点（运行中绿色 / 停止灰色）
 function setSidebarStatus(running) {
   if (sidebarDot) sidebarDot.className = 'sidebar-dot' + (running ? ' running' : '');
-  if (sidebarStatusText) sidebarStatusText.textContent = running ? '运行中' : '未运行';
+  if (sidebarStatusText) sidebarStatusText.textContent = running ? t('statusRunning') : t('statusStopped');
 }
 
 // ============ 首页渲染（模式选择 / 运行中 / 已停止） ============
@@ -245,27 +253,27 @@ function startUptimeTicker(service) {
 function renderHome(phase, service) {
   resetModeCards();
   if (phase === 'running') {
-    homeSubtitle.textContent = '服务正在运行中';
-    homeHint.textContent = '可在下方停止或重新运行服务';
+    homeSubtitle.textContent = currentLanguage === 'en' ? 'Service is running' : '服务正在运行中';
+    homeHint.textContent = currentLanguage === 'en' ? 'You can stop or restart the service below' : '可在下方停止或重新运行服务';
     homeHint.hidden = false;
     modeCards.hidden = true;
     statusPanel.hidden = false;
     statusDot.className = 'status-dot running';
-    statusTitle.textContent = '正在运行中';
+    statusTitle.textContent = currentLanguage === 'en' ? 'Running' : '正在运行中';
     btnOpenMain.hidden = false;
     btnStopService.hidden = false;
     btnRestartService.hidden = false;
     setSidebarStatus(true);
     startUptimeTicker(service);
   } else if (phase === 'stopped') {
-    homeSubtitle.textContent = '服务已停止';
-    homeHint.textContent = '可重新运行，或选择其他启动模式';
+    homeSubtitle.textContent = currentLanguage === 'en' ? 'Service stopped' : '服务已停止';
+    homeHint.textContent = currentLanguage === 'en' ? 'Restart it, or choose another launch mode' : '可重新运行，或选择其他启动模式';
     homeHint.hidden = false;
     modeCards.hidden = false;
     statusPanel.hidden = false;
     statusDot.className = 'status-dot stopped';
-    statusTitle.textContent = '服务已停止';
-    statusDesc.textContent = '服务未在运行，点击「重新运行」可再次启动';
+    statusTitle.textContent = currentLanguage === 'en' ? 'Service stopped' : '服务已停止';
+    statusDesc.textContent = currentLanguage === 'en' ? 'The service is not running. Click "Restart" to start it again.' : '服务未在运行，点击「重新运行」可再次启动';
     btnOpenMain.hidden = true;
     btnStopService.hidden = true;
     btnRestartService.hidden = false;
@@ -273,8 +281,8 @@ function renderHome(phase, service) {
     stopUptimeTicker();
   } else {
     // mode：选择启动模式
-    homeSubtitle.textContent = '选择启动模式，开始使用';
-    homeHint.textContent = '请选择一种启动模式，本页面不会自动进入';
+    homeSubtitle.textContent = currentLanguage === 'en' ? 'Choose a launch mode to get started' : '选择启动模式，开始使用';
+    homeHint.textContent = currentLanguage === 'en' ? 'Choose a launch mode — this page does not auto-start' : '请选择一种启动模式，本页面不会自动进入';
     homeHint.hidden = false;
     modeCards.hidden = false;
     statusPanel.hidden = true;
@@ -311,9 +319,9 @@ btnOpenMain.addEventListener('click', () => { if (window.dsh) window.dsh.showMai
 btnStopService.addEventListener('click', () => {
   if (!window.dsh) return;
   // 提示确认
-  if (!window.confirm('确定要停止运行 DeepSeek Harness 服务吗？')) return;
+  if (!window.confirm(currentLanguage === 'en' ? 'Stop the DeepSeek Harness service?' : '确定要停止运行 DeepSeek Harness 服务吗？')) return;
   btnStopService.disabled = true;
-  statusTitle.textContent = '正在停止...';
+  statusTitle.textContent = t('statusStopping');
   window.dsh.stopService().then(() => { btnStopService.disabled = false; });
 });
 
@@ -323,7 +331,7 @@ btnRestartService.addEventListener('click', () => {
   setPercent(0);
   setIcon('');
   stageTextEl.textContent = '正在重新运行...';
-  stageTagEl.textContent = STAGE_LABELS.init;
+  stageTagEl.textContent = STAGE_LABELS.init();
   footer.hidden = true;
   errorTip.hidden = true;
   window.dsh.restartService();
@@ -447,15 +455,15 @@ function buildRecItem(p) {
   status.className = 'plugin-status';
   const parts = [];
   if (op === 'install') {
-    parts.push('正在安装中...');
+    parts.push(t('pluginInstalling'));
   } else if (op === 'uninstall') {
-    parts.push('正在卸载中...');
+    parts.push(t('pluginUninstalling'));
   } else if (p.installed) {
-    parts.push('已安装' + (p.version ? ' v' + p.version : ''));
-    parts.push(p.bundled ? '已注册（重启服务后自动加载）' : '未注册 bundles');
-    if (p.legacyInstalled) parts.push('旧包名安装，建议迁移到新包名');
+    parts.push(t('pluginInstalled') + (p.version ? ' v' + p.version : ''));
+    parts.push(p.bundled ? t('pluginBundled') : t('pluginNotBundled'));
+    if (p.legacyInstalled) parts.push(t('pluginLegacyInstalled'));
   } else {
-    parts.push('未安装');
+    parts.push(t('pluginNotInstalled'));
   }
   status.textContent = parts.join(' · ');
   info.appendChild(name);
@@ -464,28 +472,54 @@ function buildRecItem(p) {
 
   const actions = document.createElement('div');
   actions.className = 'plugin-rec-actions';
-  const installBtn = document.createElement('button');
-  installBtn.className = 'settings-btn primary';
-  installBtn.dataset.action = 'install';
-  // 旧包名已安装：按钮变为「迁移到新包名」（主进程会先卸载旧包再装新包）
+  const opActive = !!op || pluginBusy;
+
+  // 旧包名已安装：提供「一键更新」+「卸载重装」两种选择
   if (p.legacyInstalled) {
-    installBtn.textContent = op === 'install' ? '安装中...' : '迁移到新包名';
-    installBtn.classList.add('migrate');
+    // 一键更新：直接安装新包名（主进程 installPlugin 会自动先卸旧包再装新包）
+    const updateBtn = document.createElement('button');
+    updateBtn.className = 'settings-btn primary migrate';
+    updateBtn.dataset.action = 'update';
+    updateBtn.textContent = op === 'install' ? t('pluginInstalling') : t('pluginUpdateBtn');
+    updateBtn.disabled = opActive;
+    updateBtn.addEventListener('click', () => doPluginInstall(p.pkg));
+    // 卸载重装：先卸载旧包，再安装新包
+    const reinstallBtn = document.createElement('button');
+    reinstallBtn.className = 'settings-btn';
+    reinstallBtn.dataset.action = 'reinstall';
+    reinstallBtn.textContent = op === 'uninstall' ? t('pluginUninstalling') : t('pluginReinstallBtn');
+    reinstallBtn.disabled = opActive;
+    reinstallBtn.addEventListener('click', () => {
+      if (!window.confirm((currentLanguage === 'en' ? 'Uninstall ' : '确定要卸载 ') + p.pkg + (currentLanguage === 'en' ? ' and reinstall with the new package name?' : ' 的旧版本，然后重新安装新包名版本吗？'))) return;
+      // 卸载旧包（主进程卸载逻辑会一并清理新旧包名残留）
+      uninstallPkg(p.pkg, { skipConfirm: true }).then((r) => {
+        if (!r || r.ok === false) {
+          showCustomNote(currentLanguage === 'en' ? 'Uninstall failed, reinstall cancelled' : '卸载失败，已取消重新安装', 'err');
+          return;
+        }
+        doPluginInstall(p.pkg);
+      }).catch(() => {});
+    });
+    actions.appendChild(updateBtn);
+    actions.appendChild(reinstallBtn);
   } else {
-    installBtn.textContent = op === 'install' ? '安装中...' : '一键安装';
+    const installBtn = document.createElement('button');
+    installBtn.className = 'settings-btn primary';
+    installBtn.dataset.action = 'install';
+    installBtn.textContent = op === 'install' ? t('pluginInstalling') : t('pluginInstallBtn');
+    installBtn.hidden = (!!p.installed && op !== 'install') || op === 'uninstall';
+    installBtn.disabled = opActive;
+    installBtn.addEventListener('click', () => doPluginInstall(p.pkg));
+    const uninstallBtn = document.createElement('button');
+    uninstallBtn.className = 'settings-btn';
+    uninstallBtn.dataset.action = 'uninstall';
+    uninstallBtn.textContent = op === 'uninstall' ? t('pluginUninstalling') : t('pluginUninstallBtn');
+    uninstallBtn.hidden = (!p.installed && op !== 'uninstall') || op === 'install';
+    uninstallBtn.disabled = opActive;
+    uninstallBtn.addEventListener('click', () => uninstallPkg(p.pkg));
+    actions.appendChild(installBtn);
+    actions.appendChild(uninstallBtn);
   }
-  installBtn.hidden = (!!p.installed && op !== 'install') || op === 'uninstall';
-  installBtn.disabled = !!op || pluginBusy;
-  installBtn.addEventListener('click', () => doPluginInstall(p.pkg));
-  const uninstallBtn = document.createElement('button');
-  uninstallBtn.className = 'settings-btn';
-  uninstallBtn.dataset.action = 'uninstall';
-  uninstallBtn.textContent = op === 'uninstall' ? '卸载中...' : '卸载';
-  uninstallBtn.hidden = (!p.installed && op !== 'uninstall') || op === 'install';
-  uninstallBtn.disabled = !!op || pluginBusy;
-  uninstallBtn.addEventListener('click', () => uninstallPkg(p.pkg));
-  actions.appendChild(installBtn);
-  actions.appendChild(uninstallBtn);
 
   item.appendChild(icon);
   item.appendChild(info);
@@ -540,7 +574,7 @@ function loadInstalledList() {
     if (list.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'installed-empty';
-      empty.textContent = '暂无已安装插件';
+      empty.textContent = t('pluginInstalledEmpty');
       installedList.appendChild(empty);
       return;
     }
@@ -557,20 +591,20 @@ function loadInstalledList() {
       const meta = document.createElement('div');
       meta.className = 'installed-meta';
       if (op === 'uninstall') {
-        meta.textContent = '正在卸载中...';
+        meta.textContent = t('pluginUninstalling');
       } else {
         meta.textContent = 'v' + (p.version || '?');
       }
-      if (['@feiyang666/deepseekharnessdesktop', '@feiyang666/dsh-vault', '@feiyang666/deepseekharnessdesktop-vault'].includes(p.pkg)) {
+      if (['@feiyang666/dsh-usage-plugin', '@feiyang666/deepseekharnessdesktop', '@feiyang666/dsh-vault', '@feiyang666/deepseekharnessdesktop-vault'].includes(p.pkg)) {
         const rec = document.createElement('span');
         rec.className = 'installed-badge rec';
-        rec.textContent = '推荐';
+        rec.textContent = t('modeQuickBadge');
         meta.appendChild(rec);
       }
       if (p.bundled && op !== 'uninstall') {
         const b = document.createElement('span');
         b.className = 'installed-badge';
-        b.textContent = '已注册';
+        b.textContent = t('pluginBundled');
         meta.appendChild(b);
       }
       info.appendChild(name);
@@ -611,11 +645,11 @@ function doCustomInstall() {
   if (pluginBusy || !window.dsh || !window.dsh.installCustomPlugin) return;
   const val = customPkgInput.value.trim();
   if (!val) {
-    showCustomNote('请先填写要安装的插件包名或安装命令', 'err');
+    showCustomNote(currentLanguage === 'en' ? 'Please enter a plugin package name or install command first' : '请先填写要安装的插件包名或安装命令', 'err');
     return;
   }
   setPluginBusy(true);
-  showCustomNote('正在安装，请稍候（首次需从镜像下载依赖）...', '');
+  showCustomNote(currentLanguage === 'en' ? 'Installing, please wait (first install downloads dependencies from the mirror)...' : '正在安装，请稍候（首次需从镜像下载依赖）...', '');
   ensureCustomLogOpen();
   window.dsh.installCustomPlugin(val).then((r) => {
     setPluginBusy(false);
@@ -634,19 +668,28 @@ function doCustomInstall() {
   });
 }
 
-// 卸载指定插件（支持同时卸载多个不同插件，互不影响）
-function uninstallPkg(pkg) {
-  if (!window.dsh || !window.dsh.uninstallPlugin) return;
-  if (opFor({ pkg })) return; // 该插件已在操作中
-  if (!window.confirm('确定要卸载插件 ' + pkg + ' 吗？')) return;
+// 卸载指定插件（支持同时卸载多个不同插件，互不影响）。
+// 返回 Promise，供「卸载重装」等组合操作链式调用。
+function uninstallPkg(pkg, opts) {
+  const o = opts || {};
+  if (!window.dsh || !window.dsh.uninstallPlugin) return Promise.resolve();
+  if (opFor({ pkg })) return Promise.resolve(); // 该插件已在操作中
+  if (!o.skipConfirm && !window.confirm((currentLanguage === 'en' ? 'Uninstall plugin ' : '确定要卸载插件 ') + pkg + (currentLanguage === 'en' ? '?' : ' 吗？'))) return Promise.resolve();
   localBusy.set(pkg, 'uninstall');
   refreshPluginLists();
-  window.dsh.uninstallPlugin(pkg).then(() => {
+  return window.dsh.uninstallPlugin(pkg).then((r) => {
     localBusy.delete(pkg);
     refreshPluginLists();
-  }).catch(() => {
+    // 主进程可能报告卸载失败（如目录被占用），这里如实提示
+    if (r && r.ok === false) {
+      showCustomNote((currentLanguage === 'en' ? 'Uninstall failed: ' : '卸载失败：') + ((r.error || (currentLanguage === 'en' ? 'unknown error' : '未知错误')) + '').slice(0, 120), 'err');
+    }
+    return r;
+  }).catch((e) => {
     localBusy.delete(pkg);
     refreshPluginLists();
+    showCustomNote((currentLanguage === 'en' ? 'Uninstall error: ' : '卸载异常：') + String((e && e.message) || e), 'err');
+    throw e;
   });
 }
 
@@ -665,7 +708,7 @@ pluginRestartBtn.addEventListener('click', () => {
   setPercent(0);
   setIcon('');
   stageTextEl.textContent = '正在重新运行服务（插件加载中）...';
-  stageTagEl.textContent = STAGE_LABELS.init;
+  stageTagEl.textContent = STAGE_LABELS.init();
   footer.hidden = true;
   errorTip.hidden = true;
   window.dsh.restartService();
@@ -730,13 +773,13 @@ function buildMarketItem(p) {
   if (p.official) {
     const badge = document.createElement('span');
     badge.className = 'market-badge official';
-    badge.textContent = '官方';
+    badge.textContent = currentLanguage === 'en' ? 'Official' : '官方';
     nameRow.appendChild(badge);
   }
   if (!p.installable) {
     const badge = document.createElement('span');
     badge.className = 'market-badge nodl';
-    badge.textContent = '非 npm 包';
+    badge.textContent = currentLanguage === 'en' ? 'Not an npm package' : '非 npm 包';
     nameRow.appendChild(badge);
   }
 
@@ -746,7 +789,7 @@ function buildMarketItem(p) {
 
   const desc = document.createElement('div');
   desc.className = 'market-item-desc';
-  desc.textContent = p.description || '（无描述）';
+  desc.textContent = p.description || (currentLanguage === 'en' ? '(no description)' : '（无描述）');
 
   const op = opFor(p);
   const meta = document.createElement('div');
@@ -755,8 +798,8 @@ function buildMarketItem(p) {
   metaParts.push(`★ ${formatStars(p.stars)}`);
   if (p.language) metaParts.push(p.language);
   if (p.license) metaParts.push(p.license);
-  if (op === 'install') metaParts.push('正在安装中...');
-  else if (p.installed) metaParts.push('已安装 v' + (p.installedVersion || '?'));
+  if (op === 'install') metaParts.push(t('pluginInstalling'));
+  else if (p.installed) metaParts.push(t('pluginInstalled') + ' v' + (p.installedVersion || '?'));
   meta.textContent = metaParts.join(' · ');
 
   info.appendChild(nameRow);
@@ -770,25 +813,25 @@ function buildMarketItem(p) {
   if (op === 'install') {
     const installing = document.createElement('button');
     installing.className = 'btn btn-primary btn-sm';
-    installing.textContent = '安装中...';
+    installing.textContent = t('pluginInstalling');
     installing.disabled = true;
     actions.appendChild(installing);
   } else if (p.installed) {
     const done = document.createElement('span');
     done.className = 'market-installed-label';
-    done.textContent = '已安装';
+    done.textContent = t('pluginInstalled');
     actions.appendChild(done);
   } else if (p.installable) {
     const install = document.createElement('button');
     install.className = 'btn btn-primary btn-sm';
-    install.textContent = '安装';
+    install.textContent = t('pluginInstallBtn');
     install.disabled = marketBusy;
     install.addEventListener('click', () => installMarketPlugin(p, install));
     actions.appendChild(install);
   }
   const open = document.createElement('button');
   open.className = 'btn btn-sm';
-  open.textContent = '查看';
+  open.textContent = currentLanguage === 'en' ? 'View' : '查看';
   open.addEventListener('click', () => {
     if (window.dsh) window.dsh.openExternal(p.repoUrl || `https://github.com/${p.fullName}`);
   });
@@ -838,17 +881,17 @@ function loadMarket() {
     if (!res || !res.ok) {
       marketList.innerHTML = '';
       marketEmpty.hidden = false;
-      marketEmpty.textContent = marketFailText((res && res.error) || '未知错误');
-      marketTotal.textContent = '加载失败';
+      marketEmpty.textContent = marketFailText((res && res.error) || (currentLanguage === 'en' ? 'unknown error' : '未知错误'));
+      marketTotal.textContent = currentLanguage === 'en' ? 'Load failed' : '加载失败';
       marketPager.hidden = true;
       return;
     }
     marketTotalCount = res.total || res.list.length;
-    marketTotal.textContent = `共 ${marketTotalCount} 个插件`;
+    marketTotal.textContent = (currentLanguage === 'en' ? `${marketTotalCount} plugins` : `共 ${marketTotalCount} 个插件`);
     marketList.innerHTML = '';
     if (!res.list || res.list.length === 0) {
       marketEmpty.hidden = false;
-      marketEmpty.textContent = '没有找到匹配的插件';
+      marketEmpty.textContent = currentLanguage === 'en' ? 'No matching plugins found' : '没有找到匹配的插件';
       marketPager.hidden = true;
       return;
     }
@@ -867,15 +910,24 @@ function loadMarket() {
     marketList.classList.remove('loading');
     marketList.innerHTML = '';
     marketEmpty.hidden = false;
-    marketEmpty.textContent = marketFailText('网络异常');
-    marketTotal.textContent = '加载失败';
+    marketEmpty.textContent = marketFailText(currentLanguage === 'en' ? 'network error' : '网络异常');
+    marketTotal.textContent = currentLanguage === 'en' ? 'Load failed' : '加载失败';
     marketPager.hidden = true;
   });
 }
 
 // 根据错误类型生成可读的市场加载失败提示
 function marketFailText(errMsg) {
-  const msg = String(errMsg || '未知错误');
+  const msg = String(errMsg || (currentLanguage === 'en' ? 'unknown error' : '未知错误'));
+  if (currentLanguage === 'en') {
+    if (/rate limit|API rate|403|限流/i.test(msg)) {
+      return `Failed to load plugin market: ${msg} (GitHub rate limit hit, please retry later)`;
+    }
+    if (/certificate|CERT|SSL|verify|network|网络/i.test(msg)) {
+      return `Failed to load plugin market: ${msg} (network/certificate issue, auto-retry failed. Retry later or check your proxy settings)`;
+    }
+    return `Failed to load plugin market: ${msg} (please retry later)`;
+  }
   if (/rate limit|API rate|403|限流/i.test(msg)) {
     return `插件市场加载失败：${msg}（触发了 GitHub 限流，请稍后再试）`;
   }
@@ -929,11 +981,290 @@ function openSettings() {
   }
 }
 
+// ============ 界面语言（中文 / English） ============
+let currentLanguage = 'zh';           // 'zh' | 'en'
+let currentThemePref = 'system';      // 用户档位：dark | light | system
+let currentResolvedTheme = 'dark';    // 'dark' | 'light'（实际生效明暗）
+
+const I18N = {
+  zh: {
+    navHome: '首页',
+    navPlugin: '插件管理',
+    navMarket: '插件市场',
+    navSettings: '设置',
+    statusStopped: '未运行',
+    statusStarting: '正在启动...',
+    statusRunning: '运行中',
+    statusStopping: '正在停止...',
+    sidebarLang: '中文',
+    sidebarLangEn: 'EN',
+    sidebarThemeDark: '深色',
+    sidebarThemeLight: '浅色',
+    sidebarRepo: 'GitHub 项目',
+    homeTitle: 'DeepSeek Harness 桌面版',
+    homeSubtitle: '选择启动模式，开始使用',
+    homeHint: '请选择一种启动模式，本页面不会自动进入',
+    btnOpenMain: '打开主界面',
+    btnStopService: '停止运行',
+    btnRestartService: '重新运行',
+    modeQuickBadge: '推荐',
+    modeQuickTitle: '快速启动',
+    modeQuickDesc: '官方 npx @deepseek-ai/dsh web，最快开始使用',
+    modeQuickF1: '按官方规范 npx 自动安装',
+    modeQuickF2: '自动选择最快国内镜像',
+    modeQuickF3: '无需安装额外工具',
+    modeQuickBtn: '选择快速启动',
+    modeSourceTitle: '源码完整安装',
+    modeSourceDesc: 'git clone + pnpm install + build，适合开发调试',
+    modeSourceF1: 'git clone 官方仓库源码',
+    modeSourceF2: 'pnpm install + pnpm run build',
+    modeSourceF3: '需要 git，pnpm 自动安装',
+    modeSourceBtn: '选择源码安装',
+    modeRepairTitle: '本地修复',
+    modeRepairDesc: '应急抢修：强力清除本地数据后快速启动',
+    modeRepairF1: '强力清除 ~/.dsh 全部本地数据',
+    modeRepairF2: '修复坏插件引用导致的启动崩溃',
+    modeRepairF3: '官方快速版 npx 直接启动',
+    modeRepairBtn: '选择本地修复',
+    logTitle: '命令行日志',
+    logWaiting: '等待输出...',
+    errorTipText: '启动失败。可尝试「本地修复」强力清除本地数据后重新启动。',
+    btnOpenNode: '前往 nodejs.org 下载',
+    btnRepair: '选择本地修复',
+    btnRetry: '重新开始',
+    btnQuit: '退出',
+    pluginTitle: '插件管理',
+    pluginSubtitle: '管理已安装插件，或通过包名自定义安装',
+    pluginCustomTitle: '自定义安装',
+    pluginCustomBtn: '安装',
+    pluginCustomHint: '不限制格式：支持纯包名、「npm install 包名」、「npx @deepseek-ai/dsh plugin --profile web add 包名」、node / pnpm 等任意命令，原样执行。安装完成后点击「立即重启」即可生效。',
+    pluginRecTitle: '推荐插件',
+    pluginInstalledTitle: '已安装插件',
+    pluginInstalledEmpty: '暂无已安装插件',
+    pluginRestartHint: '插件安装 / 卸载后需要重启服务才会加载。重启会短暂关闭当前 WebUI 窗口，完成后会自动重新打开。',
+    pluginRestartBtn: '立即重启服务',
+    btnRefresh: '刷新',
+    marketTitle: '插件市场',
+    marketSubtitle: '扫描 GitHub 上带 dsh-plugin 话题的插件仓库，一键安装',
+    marketSearchBtn: '搜索',
+    marketLoading: '正在从 GitHub 加载插件列表…',
+    marketEmpty: '没有找到匹配的插件',
+    marketPrev: '上一页',
+    marketNext: '下一页',
+    setAbout: '关于',
+    setVersionPrefix: '版本 ',
+    setAppearance: '外观',
+    setThemeTitle: '界面主题',
+    setThemeDesc: '切换深色 / 浅色 / 跟随系统主题，选择后立即生效并保存；与官方 WebUI 多端同步，任意一端切换，另一端自动跟随',
+    themeDark: '深色',
+    themeLight: '浅色',
+    themeSystem: '跟随系统',
+    setNotifications: '通知',
+    setNotifyTitle: '新版本通知',
+    setNotifyDesc: '发现新版本时弹出系统通知提醒',
+    setDevTitle: '开发者选项',
+    setDevModeTitle: '开启开发者选项模式',
+    setDevModeDesc: '选择「快速启动」时分离运行「服务端后端」与「浏览器端热更 watcher（pnpm dev:web）」两个进程，改动客户端插件源码后自动重建并热更。需先完成一次「源码完整安装」，开关对下次启动生效。',
+    setRuntimeTitle: '运行环境（dsh）',
+    setRuntimeDesc: '快速启动使用 npm exec（npx）方式：每次启动都会自动解析并更新到官方 registry 的最新版本',
+    setDshCheck: '检查最新版本',
+    setUpdateTitle: '检查更新',
+    setCheckNow: '立即检查',
+    setFoundNew: '发现新版本 v',
+    setDownloadBtn: '下载并安装',
+    umFoundNew: '发现新版本',
+    umLater: '稍后再说',
+    umNotesLoading: '加载中...',
+    // 动态文本（JS 中使用 t() 获取）
+    stageInit: '正在初始化',
+    stageDetect: '检测本地环境',
+    stageInstall: '安装运行环境',
+    stageStart: '启动服务中',
+    stageReady: '启动完成',
+    stageError: '启动失败',
+    stageRestart: '重新运行',
+    pluginInstalling: '正在安装中...',
+    pluginUninstalling: '正在卸载中...',
+    pluginInstalled: '已安装',
+    pluginNotInstalled: '未安装',
+    pluginBundled: '已注册（重启服务后自动加载）',
+    pluginNotBundled: '未注册 bundles',
+    pluginLegacyInstalled: '旧包名安装，建议迁移到新包名',
+    pluginInstallBtn: '一键安装',
+    pluginUpdateBtn: '一键更新',
+    pluginReinstallBtn: '卸载重装',
+    pluginUninstallBtn: '卸载',
+    pluginMigrateBtn: '迁移到新包名',
+    stepPrefix: '步骤',
+    setUpdateChecking: '正在检查更新...',
+    setUpdateDownloading: '正在下载...',
+    setDownloadingBtn: '下载中...',
+    setNoChangelog: '暂无更新日志',
+    setCurrentVersion: '当前版本：',
+  },
+  en: {
+    navHome: 'Home',
+    navPlugin: 'Plugins',
+    navMarket: 'Market',
+    navSettings: 'Settings',
+    statusStopped: 'Stopped',
+    statusStarting: 'Starting...',
+    statusRunning: 'Running',
+    statusStopping: 'Stopping...',
+    sidebarLang: 'English',
+    sidebarLangEn: 'EN',
+    sidebarThemeDark: 'Dark',
+    sidebarThemeLight: 'Light',
+    sidebarRepo: 'GitHub Repo',
+    homeTitle: 'DeepSeek Harness Desktop',
+    homeSubtitle: 'Choose a launch mode to get started',
+    homeHint: 'Choose a launch mode — this page does not auto-start',
+    btnOpenMain: 'Open Main UI',
+    btnStopService: 'Stop Service',
+    btnRestartService: 'Restart',
+    modeQuickBadge: 'Recommended',
+    modeQuickTitle: 'Quick Start',
+    modeQuickDesc: 'Official npx @deepseek-ai/dsh web — fastest way to start',
+    modeQuickF1: 'Auto-install via official npx',
+    modeQuickF2: 'Auto-select fastest China mirror',
+    modeQuickF3: 'No extra tools needed',
+    modeQuickBtn: 'Choose Quick Start',
+    modeSourceTitle: 'Full Source Build',
+    modeSourceDesc: 'git clone + pnpm install + build, for development & debugging',
+    modeSourceF1: 'git clone official repo source',
+    modeSourceF2: 'pnpm install + pnpm run build',
+    modeSourceF3: 'Requires git; pnpm auto-installs',
+    modeSourceBtn: 'Choose Source Build',
+    modeRepairTitle: 'Local Repair',
+    modeRepairDesc: 'Emergency repair: force-clear local data then quick start',
+    modeRepairF1: 'Force-clear all ~/.dsh local data',
+    modeRepairF2: 'Fix startup crashes caused by broken plugin refs',
+    modeRepairF3: 'Starts via official quick-start npx',
+    modeRepairBtn: 'Choose Local Repair',
+    logTitle: 'Command Log',
+    logWaiting: 'Waiting for output...',
+    errorTipText: 'Startup failed. Try "Local Repair" to force-clear local data and restart.',
+    btnOpenNode: 'Go to nodejs.org to download',
+    btnRepair: 'Local Repair',
+    btnRetry: 'Restart',
+    btnQuit: 'Quit',
+    pluginTitle: 'Plugin Management',
+    pluginSubtitle: 'Manage installed plugins or install by package name',
+    pluginCustomTitle: 'Custom Install',
+    pluginCustomBtn: 'Install',
+    pluginCustomHint: 'No format restrictions: plain package name, "npm install <pkg>", "npx @deepseek-ai/dsh plugin --profile web add <pkg>", node / pnpm — any command, run as-is. Click "Restart Now" after install to apply.',
+    pluginRecTitle: 'Recommended Plugins',
+    pluginInstalledTitle: 'Installed Plugins',
+    pluginInstalledEmpty: 'No plugins installed yet',
+    pluginRestartHint: 'After install / uninstall, you must restart the service to load. Restart briefly closes the WebUI window and reopens it automatically.',
+    pluginRestartBtn: 'Restart Service Now',
+    btnRefresh: 'Refresh',
+    marketTitle: 'Plugin Market',
+    marketSubtitle: 'Scan GitHub plugin repos tagged with dsh-plugin and install with one click',
+    marketSearchBtn: 'Search',
+    marketLoading: 'Loading plugin list from GitHub...',
+    marketEmpty: 'No matching plugins found',
+    marketPrev: 'Prev',
+    marketNext: 'Next',
+    setAbout: 'About',
+    setVersionPrefix: 'Version ',
+    setAppearance: 'Appearance',
+    setThemeTitle: 'Interface Theme',
+    setThemeDesc: 'Dark / Light / Follow System — takes effect immediately and saves. Synced with the official WebUI: change it on either side and the other follows.',
+    themeDark: 'Dark',
+    themeLight: 'Light',
+    themeSystem: 'Follow System',
+    setNotifications: 'Notifications',
+    setNotifyTitle: 'New version notification',
+    setNotifyDesc: 'Show a system notification when a new version is found',
+    setDevTitle: 'Developer Options',
+    setDevModeTitle: 'Enable developer options mode',
+    setDevModeDesc: 'When choosing "Quick Start", runs "service backend" and "browser hot-reload watcher (pnpm dev:web)" as two processes; changes to client plugin sources rebuild and hot-reload automatically. A "Full Source Build" must be done first. Applies on next launch.',
+    setRuntimeTitle: 'Runtime (dsh)',
+    setRuntimeDesc: 'Quick Start uses npm exec (npx): resolves and updates to the latest official registry version on every start',
+    setDshCheck: 'Check Latest Version',
+    setUpdateTitle: 'Check for Updates',
+    setCheckNow: 'Check Now',
+    setFoundNew: 'New version found: v',
+    setDownloadBtn: 'Download & Install',
+    umFoundNew: 'New Version Found',
+    umLater: 'Later',
+    umNotesLoading: 'Loading...',
+    // 动态文本
+    stageInit: 'Initializing',
+    stageDetect: 'Detecting environment',
+    stageInstall: 'Installing runtime',
+    stageStart: 'Starting service',
+    stageReady: 'Ready',
+    stageError: 'Startup failed',
+    stageRestart: 'Restarting',
+    pluginInstalling: 'Installing...',
+    pluginUninstalling: 'Uninstalling...',
+    pluginInstalled: 'Installed',
+    pluginNotInstalled: 'Not installed',
+    pluginBundled: 'Registered (auto-loads after service restart)',
+    pluginNotBundled: 'Not registered in bundles',
+    pluginLegacyInstalled: 'Installed with old package name, migrate recommended',
+    pluginInstallBtn: 'Install',
+    pluginUpdateBtn: 'Update',
+    pluginReinstallBtn: 'Reinstall',
+    pluginUninstallBtn: 'Uninstall',
+    pluginMigrateBtn: 'Migrate to New Name',
+    stepPrefix: 'Step',
+    setUpdateChecking: 'Checking for updates...',
+    setUpdateDownloading: 'Downloading...',
+    setDownloadingBtn: 'Downloading...',
+    setNoChangelog: 'No changelog available',
+    setCurrentVersion: 'Current version: ',
+  },
+};
+
+// 取当前语言的文本
+function t(key) {
+  const dict = I18N[currentLanguage] || I18N.zh;
+  return dict[key] != null ? dict[key] : (I18N.zh[key] != null ? I18N.zh[key] : key);
+}
+
+// 应用当前语言到所有标记了 data-i18n 的元素 + 侧边栏动态文本
+function applyI18n() {
+  const dict = I18N[currentLanguage] || I18N.zh;
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    const key = el.getAttribute('data-i18n');
+    if (dict[key] != null) el.textContent = dict[key];
+  });
+  // 复合前缀文本（如「版本 1.8.0」）：data-i18n-prefix 指定前缀 key，原内容后缀保留
+  document.querySelectorAll('[data-i18n-prefix]').forEach((el) => {
+    const key = el.getAttribute('data-i18n-prefix');
+    if (dict[key] != null) {
+      const span = el.querySelector('span');
+      if (span) el.childNodes[0].textContent = dict[key];
+    }
+  });
+  // 侧边栏语言按钮文字
+  if (sidebarLangText) {
+    sidebarLangText.textContent = currentLanguage === 'en' ? I18N.en.sidebarLang : I18N.zh.sidebarLang;
+  }
+  // 侧边栏主题文字（跟随当前明暗）
+  syncSidebarTheme(currentThemePref, currentResolvedTheme);
+}
+
+// 切换语言并持久化
+function setLanguage(lang) {
+  const next = lang === 'en' ? 'en' : 'zh';
+  if (next === currentLanguage) return;
+  currentLanguage = next;
+  if (window.dsh && window.dsh.setLanguage) {
+    window.dsh.setLanguage(next).catch(() => {});
+  }
+  applyI18n();
+}
+
 // ============ 界面主题（深色 / 浅色 / 跟随系统） ============
 // 应用主题：在 <html> 上设置 data-theme，CSS 变量据此切换。
 // theme 为档位（'dark' | 'light' | 'system'），resolved 为实际明暗（'dark' | 'light'）。
 function applyTheme(resolvedTheme) {
   const t = resolvedTheme === 'light' ? 'light' : 'dark';
+  currentResolvedTheme = t;
   document.documentElement.setAttribute('data-theme', t);
 }
 
@@ -947,8 +1278,28 @@ function syncThemeButtons(theme) {
 
 // 应用档位 + 实际明暗：HTML 切换 + 按钮高亮
 function applyThemeState(theme, resolved) {
-  applyTheme(resolved || theme);
-  syncThemeButtons(theme || 'system');
+  currentThemePref = theme || 'system';
+  const actual = resolved || currentThemePref;
+  applyTheme(actual);
+  syncThemeButtons(currentThemePref);
+  syncSidebarTheme(currentThemePref, actual);
+}
+
+// 同步侧边栏主题快捷按钮（深色/浅色 与文字、图标）
+function syncSidebarTheme(theme, resolved) {
+  if (!sidebarThemeBtn) return;
+  const dark = resolved === 'dark';
+  if (sidebarThemeText) {
+    sidebarThemeText.textContent = dark
+      ? (currentLanguage === 'en' ? 'Dark' : '深色')
+      : (currentLanguage === 'en' ? 'Light' : '浅色');
+  }
+  if (sidebarThemeIcon) {
+    // 深色：月亮图标；浅色：太阳图标
+    sidebarThemeIcon.innerHTML = dark
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>';
+  }
 }
 
 // 主题切换按钮：点击即切换并持久化
@@ -961,6 +1312,13 @@ function setupThemeControls() {
   }
   if (themeSystemBtn) {
     themeSystemBtn.addEventListener('click', () => setTheme('system'));
+  }
+  // 侧边栏快捷主题切换：深色 <-> 浅色 循环切换
+  if (sidebarThemeBtn) {
+    sidebarThemeBtn.addEventListener('click', () => {
+      const dark = currentResolvedTheme === 'dark';
+      setTheme(dark ? 'light' : 'dark');
+    });
   }
 }
 
@@ -978,7 +1336,6 @@ function applyAppName(name, tagline) {
   const n = name || 'DeepSeek Harness 桌面版';
   const t = tagline || 'DeepSeek Harness 官方 Web UI 桌面客户端';
   document.title = n;
-  if (appTitleHome) appTitleHome.textContent = n;
   if (appTitleProgress) appTitleProgress.textContent = n;
   if (setAppName) setAppName.textContent = n;
   if (setTagline) setTagline.textContent = t;
@@ -997,18 +1354,25 @@ function loadSettings() {
       setNotifyToggle.checked = !!cfg.notifications;
       setDevModeToggle.checked = !!cfg.developerMode;
       if (cfg.dshVersion) {
-        setDshVersion.textContent = '当前版本：v' + cfg.dshVersion;
+        setDshVersion.textContent = t('setCurrentVersion') + 'v' + cfg.dshVersion;
       }
       if (cfg.theme) {
         applyThemeState(cfg.theme, cfg.themeResolved);
       }
+      if (cfg.language) {
+        currentLanguage = cfg.language === 'en' ? 'en' : 'zh';
+      }
+      if (cfg.repoUrl && sidebarRepo) {
+        sidebarRepo.href = cfg.repoUrl;
+      }
+      applyI18n();
       if (cfg.updateApiBase) {
-        setUpdateBase.textContent = '更新服务：' + cfg.updateApiBase;
+        setUpdateBase.textContent = (currentLanguage === 'en' ? 'Update service: ' : '更新服务：') + cfg.updateApiBase;
       }
       if (cfg.changelog) {
         setChangelog.innerHTML = renderMarkdown(cfg.changelog);
       } else {
-        setChangelog.innerHTML = '<p>暂无更新日志</p>';
+        setChangelog.innerHTML = '<p>' + t('setNoChangelog') + '</p>';
       }
     }
   }).catch(() => {
@@ -1043,18 +1407,18 @@ function loadDshVersionInfo() {
   window.dsh.getDshVersionInfo().then((info) => {
     setDshCheckBtn.disabled = false;
     if (!info || !info.ok) {
-      if (info && info.running) setDshVersion.textContent = '当前版本：v' + info.running;
-      showDshNote('最新版本查询失败：' + ((info && info.error) || '未知错误') + '（检查网络后重试）', 'err');
+      if (info && info.running) setDshVersion.textContent = t('setCurrentVersion') + 'v' + info.running;
+      showDshNote((currentLanguage === 'en' ? 'Failed to check latest version: ' : '最新版本查询失败：') + ((info && info.error) || (currentLanguage === 'en' ? 'unknown error' : '未知错误')) + (currentLanguage === 'en' ? ' (check network and retry)' : '（检查网络后重试）'), 'err');
       return;
     }
     const parts = [];
-    if (info.running) parts.push('当前版本 v' + info.running);
-    if (info.latest) parts.push('最新版本 v' + info.latest);
-    setDshVersion.textContent = parts.length > 0 ? parts.join(' · ') : '当前版本：-';
+    if (info.running) parts.push((currentLanguage === 'en' ? 'Current v' : '当前版本 v') + info.running);
+    if (info.latest) parts.push((currentLanguage === 'en' ? 'Latest v' : '最新版本 v') + info.latest);
+    setDshVersion.textContent = parts.length > 0 ? parts.join(' · ') : t('setCurrentVersion') + '-';
     if (info.outdated) {
-      showDshNote('发现新版本：停止运行后重新选择「快速启动」，npx 会自动下载并使用最新版', '');
+      showDshNote(currentLanguage === 'en' ? 'New version found: stop the service, choose "Quick Start" again, and npx will download and use the latest version automatically' : '发现新版本：停止运行后重新选择「快速启动」，npx 会自动下载并使用最新版', '');
     } else if (info.running && info.latest) {
-      showDshNote('已是最新版本', 'ok');
+      showDshNote(currentLanguage === 'en' ? 'Already up to date' : '已是最新版本', 'ok');
     } else {
       showDshNote('', '');
     }
@@ -1076,7 +1440,7 @@ setDownloadBtn.addEventListener('click', () => {
   if (!window.dsh || !window.dsh.downloadUpdate) return;
   // 已下载完成 -> 点击安装
   const btnText = setDownloadBtnText.textContent;
-  if (btnText === '安装更新' && window.dsh.installUpdate) {
+  if ((currentLanguage === 'en' ? btnText === 'Install Update' : btnText === '安装更新') && window.dsh.installUpdate) {
     window.dsh.installUpdate();
     return;
   }
@@ -1090,12 +1454,12 @@ function renderUpdateStatus(state) {
   if (!state) return;
   const s = state.status;
   if (s === 'checking') {
-    setUpdateStatus.textContent = '正在检查更新...';
+    setUpdateStatus.textContent = t('setUpdateChecking');
     setUpdateHint.textContent = '';
     setUpdateInfo.hidden = true;
     setDownloadProgress.hidden = true;
   } else if (s === 'uptodate') {
-    setUpdateStatus.textContent = '已是最新版本';
+    setUpdateStatus.textContent = currentLanguage === 'en' ? 'Already up to date' : '已是最新版本';
     setUpdateHint.textContent = '';
     setUpdateInfo.hidden = true;
   } else if (s === 'available') {
@@ -1103,33 +1467,33 @@ function renderUpdateStatus(state) {
     setUpdateHint.textContent = '';
     setUpdateInfo.hidden = false;
     setDownloadProgress.hidden = true;
-    setDownloadBtnText.textContent = '下载并安装';
+    setDownloadBtnText.textContent = t('setDownloadBtn');
     if (state.latest) {
       setNewVersion.textContent = state.latest.version;
-      setNewNotes.innerHTML = renderMarkdown((state.latest.release_notes || '暂无更新日志') + '\n\n文件大小：' + formatSize(state.latest.file_size));
+      setNewNotes.innerHTML = renderMarkdown((state.latest.release_notes || t('setNoChangelog')) + '\n\n' + (currentLanguage === 'en' ? 'File size: ' : '文件大小：') + formatSize(state.latest.file_size));
     }
   } else if (s === 'downloading') {
-    setUpdateStatus.textContent = state.message || '正在下载...';
+    setUpdateStatus.textContent = state.message || t('setUpdateDownloading');
     setUpdateInfo.hidden = false;
     setDownloadProgress.hidden = false;
-    setDownloadBtnText.textContent = '下载中...';
+    setDownloadBtnText.textContent = t('setDownloadingBtn');
     setDownloadBtn.disabled = true;
     setDownloadFill.style.width = (state.percent || 0) + '%';
     setDownloadText.textContent = state.message || ((state.percent || 0) + '%');
   } else if (s === 'downloaded') {
-    setUpdateStatus.textContent = '下载完成，可安装';
+    setUpdateStatus.textContent = currentLanguage === 'en' ? 'Downloaded, ready to install' : '下载完成，可安装';
     setUpdateInfo.hidden = false;
     setDownloadProgress.hidden = false;
     setDownloadFill.style.width = '100%';
     setDownloadText.textContent = '100%';
-    setDownloadBtnText.textContent = '安装更新';
+    setDownloadBtnText.textContent = currentLanguage === 'en' ? 'Install Update' : '安装更新';
     setDownloadBtn.disabled = false;
   } else if (s === 'installing') {
-    setUpdateStatus.textContent = '正在启动安装程序...';
+    setUpdateStatus.textContent = currentLanguage === 'en' ? 'Starting installer...' : '正在启动安装程序...';
     setUpdateInfo.hidden = false;
     setDownloadProgress.hidden = true;
   } else if (s === 'error') {
-    setUpdateStatus.textContent = state.message || '更新失败';
+    setUpdateStatus.textContent = state.message || (currentLanguage === 'en' ? 'Update failed' : '更新失败');
     setUpdateHint.textContent = state.error || '';
     setUpdateInfo.hidden = true;
     setDownloadBtn.disabled = false;
@@ -1250,7 +1614,7 @@ function showUpdatePopup() {
   umLaterBtn.hidden = false;
   umProgress.hidden = true;
   umActionBtn.disabled = false;
-  umActionText.textContent = '下载并安装';
+  umActionText.textContent = t('setDownloadBtn');
 }
 
 function hideUpdatePopup() {
@@ -1262,7 +1626,7 @@ umLaterBtn.addEventListener('click', hideUpdatePopup);
 umActionBtn.addEventListener('click', () => {
   if (!window.dsh) return;
   const label = umActionText.textContent;
-  if (label === '安装更新' && window.dsh.installUpdate) {
+  if ((currentLanguage === 'en' ? label === 'Install Update' : label === '安装更新') && window.dsh.installUpdate) {
     window.dsh.installUpdate();
     return;
   }
@@ -1277,11 +1641,11 @@ function renderUpdatePopup(state) {
   if (s === 'available') {
     if (state.latest) {
       umNewVersion.textContent = state.latest.version;
-      umNotes.innerHTML = renderMarkdown((state.latest.release_notes || '暂无更新日志') + '\n\n文件大小：' + formatSize(state.latest.file_size));
+      umNotes.innerHTML = renderMarkdown((state.latest.release_notes || t('setNoChangelog')) + '\n\n' + (currentLanguage === 'en' ? 'File size: ' : '文件大小：') + formatSize(state.latest.file_size));
     }
     umProgress.hidden = true;
     umActionBtn.disabled = false;
-    umActionText.textContent = '下载并安装';
+    umActionText.textContent = t('setDownloadBtn');
     if (!autoUpdatePopupShown && settingsScreen.hidden) {
       autoUpdatePopupShown = true;
       showUpdatePopup();
@@ -1290,7 +1654,7 @@ function renderUpdatePopup(state) {
     if (!updateMask.hidden) {
       umProgress.hidden = false;
       umActionBtn.disabled = true;
-      umActionText.textContent = '下载中...';
+      umActionText.textContent = t('setDownloadingBtn');
       umFill.style.width = (state.percent || 0) + '%';
       umText.textContent = state.message || ((state.percent || 0) + '%');
     }
@@ -1300,13 +1664,13 @@ function renderUpdatePopup(state) {
       umFill.style.width = '100%';
       umText.textContent = '100%';
       umActionBtn.disabled = false;
-      umActionText.textContent = '安装更新';
+      umActionText.textContent = currentLanguage === 'en' ? 'Install Update' : '安装更新';
     }
   } else if (s === 'error') {
     if (!updateMask.hidden) {
       umProgress.hidden = true;
       umActionBtn.disabled = false;
-      umActionText.textContent = '重新下载';
+      umActionText.textContent = currentLanguage === 'en' ? 'Retry Download' : '重新下载';
     }
   }
 }
@@ -1315,7 +1679,7 @@ function renderUpdatePopup(state) {
 if (!window.dsh) {
   setPercent(0);
   stageTextEl.textContent = '预加载脚本缺失，请重新安装应用';
-  stageTagEl.textContent = STAGE_LABELS.error;
+  stageTagEl.textContent = STAGE_LABELS.error();
   setIcon('err');
   showScreen('progress');
   footer.hidden = false;
@@ -1327,6 +1691,19 @@ if (!window.dsh) {
     applyTheme(window.dsh.theme);
   }
   setupThemeControls();
+
+  // 侧边栏：语言切换按钮（中文 <-> English）
+  if (sidebarLangBtn) {
+    sidebarLangBtn.addEventListener('click', () => {
+      setLanguage(currentLanguage === 'en' ? 'zh' : 'en');
+    });
+  }
+  // 侧边栏：项目地址链接（打开 GitHub 仓库，地址由 settings:get 异步提供）
+  if (sidebarRepo && sidebarRepo.href === '#') {
+    sidebarRepo.href = 'https://github.com/feiyang-dev/DeepSeek-Harness-Desktop';
+  }
+  // 首帧应用语言（默认中文；settings:get 返回后 loadSettings 会再刷新）
+  applyI18n();
 
   // 主进程推送主题变化（控制面板 / 官方 UI / 系统深浅色切换时实时跟随）
   if (window.dsh.onThemeChanged) {
@@ -1374,7 +1751,7 @@ if (!window.dsh) {
     else progressHintEl.textContent = '';
     if (step && step.total) {
       stepIndicator.hidden = false;
-      stepPill.textContent = `步骤 ${step.index}/${step.total}`;
+      stepPill.textContent = `${t('stepPrefix')} ${step.index}/${step.total}`;
       stepTitle.textContent = step.title;
     }
   });
@@ -1387,8 +1764,8 @@ if (!window.dsh) {
     if (phase === 'error') {
       stopUptimeTicker();
       showScreen('progress'); // 无论当前在哪个页面，都切回进度页展示错误
-      stageTagEl.textContent = STAGE_LABELS.error;
-      stageTextEl.textContent = message || '启动失败';
+      stageTagEl.textContent = STAGE_LABELS.error();
+      stageTextEl.textContent = message || t('stageError');
       setIcon('err');
       footer.hidden = false;
       btnOpenNode.hidden = false;
@@ -1414,7 +1791,7 @@ if (!window.dsh) {
       renderHome('running', service);
       // 若正停留在设置页，同步刷新「运行环境（dsh）」的当前版本展示
       if (!settingsScreen.hidden && service.dshVersion && setDshVersion) {
-        setDshVersion.textContent = '当前版本：v' + service.dshVersion;
+        setDshVersion.textContent = t('setCurrentVersion') + 'v' + service.dshVersion;
       }
     }
   });
@@ -1493,7 +1870,7 @@ if (!window.dsh) {
     setPercent(0);
     setIcon('');
     stageTextEl.textContent = '正在重新开始...';
-    stageTagEl.textContent = STAGE_LABELS.init;
+    stageTagEl.textContent = STAGE_LABELS.init();
     window.dsh.retry();
   });
   btnQuit.addEventListener('click', () => window.dsh.quit());

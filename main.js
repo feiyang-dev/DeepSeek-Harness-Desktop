@@ -31,6 +31,8 @@ const APP_TAGLINE = 'DeepSeek Harness 官方 Web UI 桌面客户端';
 // ============================================================
 const UPDATE_API_BASE = (process.env.DSH_UPDATE_API || 'https://api.deepseekharness.desktop.cwj666.top').replace(/\/+$/, '');
 const UPDATE_APP_ID = 'dsh-desktop';
+// 项目主页（侧边栏「GitHub 项目」链接）
+const PROJECT_URL = 'https://github.com/feiyang-dev/DeepSeek-Harness-Desktop';
 
 // ============================================================
 //  npm 国内镜像源（多镜像自动切换，加速依赖下载）
@@ -272,11 +274,19 @@ async function waitForWebReady(checkPort, timeoutMs, onTick, shouldAbort) {
 // ============================================================
 //  工具函数
 // ============================================================
-// 应用图标：按需加载不同尺寸的 PNG（托盘用 32，窗口用 256）
+// 应用图标：按需加载不同尺寸的 PNG（托盘用 32，窗口用 256）。
+// 支持黑/白两套：white=true 时用白色 logo（深色模式），否则用黑色 logo（浅色模式）。
 const ICON_DIR = path.join(__dirname, 'assets');
-function appIcon(size) {
-  const file = size ? path.join(ICON_DIR, `icon-${size}.png`) : path.join(ICON_DIR, 'icon.png');
+function appIcon(size, white) {
+  const suffix = white ? '-white' : '';
+  const file = size
+    ? path.join(ICON_DIR, `icon-${size}${suffix}.png`)
+    : path.join(ICON_DIR, `icon${suffix}.png`);
   return nativeImage.createFromPath(file);
+}
+// 根据当前主题返回窗口图标（浅色 -> 黑 logo；深色 -> 白 logo）
+function themedAppIcon(size) {
+  return appIcon(size, resolveEffectiveTheme() === 'dark');
 }
 
 function which(cmd) {
@@ -1627,7 +1637,7 @@ function createBootWindow() {
     minHeight: 560,
     autoHideMenuBar: true,
     title: APP_NAME,
-    icon: appIcon(256),
+    icon: themedAppIcon(256),
     backgroundColor: resolved === 'light' ? '#f5f5f5' : '#111111',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -1663,7 +1673,7 @@ function createMainWindow() {
     show: false,
     autoHideMenuBar: true,
     title: APP_NAME,
-    icon: appIcon(256),
+    icon: themedAppIcon(256),
     backgroundColor: resolved === 'light' ? '#ffffff' : '#0d1117',
     webPreferences: {
       contextIsolation: true,
@@ -1699,7 +1709,7 @@ function createMainWindow() {
       buttons: ['保存到托盘', '退出 App'],
       defaultId: 0,
       cancelId: 1,
-      icon: appIcon(256),
+      icon: themedAppIcon(256),
     });
 
     closeDialogOpen = false;
@@ -1710,7 +1720,7 @@ function createMainWindow() {
         tray.displayBalloon({
           title: APP_NAME,
           content: '已保存到系统托盘，服务继续在后台运行。',
-          icon: appIcon(32),
+          icon: themedAppIcon(32),
         });
       }
     } else {
@@ -1722,7 +1732,7 @@ function createMainWindow() {
 }
 
 function createTray() {
-  // 托盘图标用 32x32 较合适（Windows 托盘显示尺寸）
+  // 托盘图标用 32x32 较合适（Windows 托盘显示尺寸），默认黑色模式
   const trayIcon = appIcon(32);
   tray = new Tray(trayIcon);
   tray.setToolTip(APP_NAME);
@@ -1778,7 +1788,7 @@ app.whenReady().then(() => {
   // 设置应用图标（影响任务栏、Alt-Tab、exe 资源）
   app.setAppUserModelId('com.dsh.desktop');
   if (process.platform === 'win32') {
-    app.setIcon && app.setIcon(appIcon(256));
+    app.setIcon && app.setIcon(themedAppIcon(256));
   }
   // 读取持久化的开发者选项模式开关
   developerMode = loadAppConfig().developerMode === true;
@@ -1912,6 +1922,11 @@ function loadAppConfig() {
     appConfig.theme = 'system';
     saveAppConfig();
   }
+  // 界面语言：'zh' | 'en'（默认 zh，简体中文）
+  if (!['zh', 'en'].includes(appConfig.language)) {
+    appConfig.language = 'zh';
+    saveAppConfig();
+  }
   return appConfig;
 }
 
@@ -1956,6 +1971,15 @@ function broadcastTheme() {
   });
   if (bootWindow && !bootWindow.isDestroyed()) {
     bootWindow.setBackgroundColor(resolved === 'light' ? '#f5f5f5' : '#111111');
+    // 标题栏图标跟随主题黑白（浅色 -> 黑 logo；深色 -> 白 logo）
+    bootWindow.setIcon(themedAppIcon(256));
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setIcon(themedAppIcon(256));
+  }
+  // 任务栏 / Alt-Tab 图标跟随主题
+  if (process.platform === 'win32' && app.setIcon) {
+    app.setIcon(themedAppIcon(256));
   }
 }
 
@@ -2072,7 +2096,7 @@ function notify(title, body) {
     const cfg = loadAppConfig();
     if (cfg.notifications === false) return;
     if (!Notification.isSupported()) return;
-    new Notification({ title, body, icon: appIcon(32) }).show();
+    new Notification({ title, body, icon: themedAppIcon(32) }).show();
   } catch (e) { /* ignore */ }
 }
 
@@ -2119,7 +2143,7 @@ function httpJsonRequestInner(url, timeoutMs, insecure) {
 
 // ---------- 检查更新 ----------
 async function checkUpdate() {
-  updateStatus({ status: 'checking', message: '正在检查更新...', error: '', latest: null, filePath: null });
+  updateStatus({ status: 'checking', messageKey: 'updateChecking', error: '', latest: null, filePath: null });
   try {
     const query = new URLSearchParams({
       appId: UPDATE_APP_ID,
@@ -2308,7 +2332,7 @@ function installUpdate() {
     buttons: ['开始安装', '稍后再说'],
     defaultId: 0,
     cancelId: 1,
-    icon: appIcon(256),
+    icon: themedAppIcon(256),
   });
   if (choice !== 0) {
     return { ok: false, message: '已取消安装' };
@@ -2360,17 +2384,29 @@ ipcMain.handle('settings:get', async () => {
     dshVersion: serviceState.dshVersion,
     theme: cfg.theme,
     themeResolved: resolveEffectiveTheme(),
+    language: cfg.language === 'en' ? 'en' : 'zh',
     deviceId: cfg.deviceId,
     updateApiBase: UPDATE_API_BASE,
     appId: UPDATE_APP_ID,
     appName: APP_NAME,
     appTagline: APP_TAGLINE,
+    repoUrl: PROJECT_URL,
   };
 });
 
 // 界面主题切换（dark / light / system），持久化 + 同步官方 WebUI + 原生层联动
 ipcMain.handle('settings:set-theme', (e, theme) => {
   return setThemePreference(theme);
+});
+
+// 界面语言切换（zh / en），持久化保存
+ipcMain.handle('settings:set-language', (e, language) => {
+  const lang = language === 'en' ? 'en' : 'zh';
+  const cfg = loadAppConfig();
+  cfg.language = lang;
+  saveAppConfig();
+  logLine(`[设置] 界面语言已切换为${lang === 'en' ? 'English' : '简体中文'}`);
+  return { ok: true, language: lang };
 });
 
 ipcMain.handle('settings:set-notifications', (e, enabled) => {

@@ -80,6 +80,8 @@ contextBridge.exposeInMainWorld('dsh', {
   setNotifications: (enabled) => ipcRenderer.invoke('settings:set-notifications', enabled),
   // 界面主题切换（'dark' | 'light' | 'system'），持久化保存并同步官方 WebUI
   setTheme: (theme) => ipcRenderer.invoke('settings:set-theme', theme),
+  // 界面语言切换（'zh' | 'en'），持久化保存
+  setLanguage: (language) => ipcRenderer.invoke('settings:set-language', language),
   // 主题变化事件（主进程推送：控制面板 / 官方 UI / 系统深浅色变化时触发）
   onThemeChanged: (cb) => {
     const listener = (_e, d) => cb(d);
