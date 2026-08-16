@@ -112,6 +112,8 @@ contextBridge.exposeInMainWorld('dsh', {
   getPluginStatus: () => ipcRenderer.invoke('plugin:status'),
   // 列出 profile 中所有已安装插件
   listPlugins: () => ipcRenderer.invoke('plugin:list'),
+  // 检测已安装插件的更新（对比 npm registry 最新版本）
+  checkPluginUpdates: () => ipcRenderer.invoke('plugin:check-updates'),
   // 一键安装推荐插件（pkg 缺省为 @feiyang666/deepseekharnessdesktop）
   installPlugin: (pkg) => ipcRenderer.invoke('plugin:install', { pkg: pkg || null }),
   // 自定义包名 / 安装命令安装插件

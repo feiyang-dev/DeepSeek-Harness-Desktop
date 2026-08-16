@@ -2520,6 +2520,69 @@ ipcMain.handle('plugin:list', async () => {
   }
 });
 
+// 简单 semver 比较：返回 1 表示 a>b，-1 表示 a<b，0 相等。忽略 v 前缀与预发布标识。
+function compareVersions(a, b) {
+  const pa = String(a || '').replace(/^v/, '').split(/[.-]/).map((s) => parseInt(s, 10) || 0);
+  const pb = String(b || '').replace(/^v/, '').split(/[.-]/).map((s) => parseInt(s, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x > y) return 1;
+    if (x < y) return -1;
+  }
+  return 0;
+}
+
+// 查询 npm registry 上某个包的最新版本（复用 dsh:version-info 的查询方式）
+async function queryNpmLatestVersion(pkgName) {
+  const nodeExe = await findNodeExe();
+  const npmCli = await findNpmCli();
+  if (!nodeExe || !npmCli) return { version: null, error: '未检测到 Node.js / npm' };
+  try {
+    const r = await runCommand(
+      nodeExe,
+      [npmCli, 'view', pkgName, 'version', '--registry', npmRegistry, '--no-audit', '--no-fund'],
+      { env: cleanServiceEnv() },
+      () => {}
+    );
+    const line = String(r.out || '').split(/\r?\n/).map((s) => s.trim()).find((s) => /^\d+\.\d+\.\d+/.test(s));
+    if (!line) return { version: null, error: '未找到该包或解析版本失败' };
+    return { version: line.replace(/^v/, ''), error: null };
+  } catch (e) {
+    return { version: null, error: e.message };
+  }
+}
+
+// 检测已安装插件的更新：遍历已安装列表，逐个查询 npm registry 最新版本并对比。
+// 旧包名安装的插件（如 @feiyang666/deepseekharnessdesktop-vault）会改为查询新包名
+// （@feiyang666/dsh-vault），并标记 legacyMigrate 提示可迁移。
+ipcMain.handle('plugin:check-updates', async () => {
+  try {
+    const installed = pluginMgr.listInstalledPlugins(pluginMgr.profileDir());
+    const results = [];
+    for (const p of installed) {
+      // 旧包名 -> 检查新包名的最新版本
+      const alias = pluginMgr.legacyAliasFor(p.pkg);
+      const checkPkg = alias || p.pkg;
+      const { version, error } = await queryNpmLatestVersion(checkPkg);
+      const current = p.version || '';
+      results.push({
+        pkg: p.pkg,
+        checkPkg,
+        current,
+        latest: version,
+        outdated: !!(version && current && compareVersions(version, current) > 0),
+        legacyMigrate: checkPkg !== p.pkg,
+        error: error || null,
+      });
+    }
+    return { ok: true, list: results };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
 // 插件安装尝试的镜像顺序：当前镜像 → 镜像池其余镜像（去重）。
 // 保证某个镜像缺包（404）/网络异常时能自动换到下一个可用镜像，插件不会因镜像问题装不上。
 function pluginRegistryAttempts() {

@@ -742,6 +742,21 @@ html[data-theme="dark"] .plugin-rec-actions .settings-btn.migrate {
   background: var(--accent-weak);
   color: var(--accent);
 }
+.installed-badge.updatable {
+  background: var(--warn-bg, #fdf6e3);
+  color: #b45309;
+  border: 1px solid rgba(180, 83, 9, 0.3);
+}
+html[data-theme="dark"] .installed-badge.updatable {
+  background: rgba(180, 83, 9, 0.18);
+  color: #fbbf24;
+}
+.installed-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
 
 /* 立即重启卡片 */
 .restart-hint-card { border-color: var(--border); background: var(--panel); border-left: 3px solid var(--accent); }

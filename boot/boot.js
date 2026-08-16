@@ -62,6 +62,7 @@ const customLogHeader = document.getElementById('customLogHeader');
 const customLogBody = document.getElementById('customLogBody');
 const customLogBadge = document.getElementById('customLogBadge');
 const installedList = document.getElementById('installedList');
+const pluginCheckUpdatesBtn = document.getElementById('pluginCheckUpdatesBtn');
 const restartHintCard = document.getElementById('restartHintCard');
 const pluginRestartBtn = document.getElementById('pluginRestartBtn');
 
@@ -137,6 +138,7 @@ let logCount = 0;
 let logOpen = false;
 let modeChosen = false;
 let pluginBusy = false;
+let pluginUpdateCheck = null; // 最近一次插件更新检查结果：{ [pkg]: { latest, outdated, legacyMigrate, error } }
 let uptimeTimer = null;
 
 const STAGE_LABELS = {
@@ -580,6 +582,7 @@ function loadInstalledList() {
     }
     for (const p of list) {
       const op = opFor(p);
+      const upd = (pluginUpdateCheck && pluginUpdateCheck[p.pkg]) || null;
       const item = document.createElement('div');
       item.className = 'installed-item';
 
@@ -607,21 +610,95 @@ function loadInstalledList() {
         b.textContent = t('pluginBundled');
         meta.appendChild(b);
       }
+      // 更新状态标记
+      if (upd && op !== 'uninstall') {
+        if (upd.outdated) {
+          const u = document.createElement('span');
+          u.className = 'installed-badge updatable';
+          u.textContent = t('pluginUpdateAvailable') + (upd.latest || '');
+          meta.appendChild(u);
+        } else if (upd.legacyMigrate) {
+          const lm = document.createElement('span');
+          lm.className = 'installed-badge updatable';
+          lm.textContent = t('pluginLegacyMigrate');
+          meta.appendChild(lm);
+        } else if (upd.latest) {
+          const ok = document.createElement('span');
+          ok.className = 'installed-badge';
+          ok.textContent = t('pluginUpToDate');
+          meta.appendChild(ok);
+        }
+      }
       info.appendChild(name);
       info.appendChild(meta);
 
+      // 操作按钮区：有更新时显示「更新」+「卸载」，否则只显示「卸载」
+      const actions = document.createElement('div');
+      actions.className = 'installed-actions';
+      if (upd && upd.outdated && op !== 'uninstall') {
+        const upBtn = document.createElement('button');
+        upBtn.className = 'settings-btn primary';
+        upBtn.textContent = op === 'install' ? t('pluginInstalling') : t('pluginUpgradeBtn');
+        upBtn.disabled = !!op || pluginBusy;
+        upBtn.addEventListener('click', () => doPluginInstall(p.pkg));
+        actions.appendChild(upBtn);
+      } else if (upd && upd.legacyMigrate && op !== 'uninstall') {
+        // 旧包名安装：提供「一键更新」迁移到新包名
+        const mgBtn = document.createElement('button');
+        mgBtn.className = 'settings-btn primary migrate';
+        mgBtn.textContent = op === 'install' ? t('pluginInstalling') : t('pluginMigrateBtn');
+        mgBtn.disabled = !!op || pluginBusy;
+        mgBtn.addEventListener('click', () => doPluginInstall(p.pkg));
+        actions.appendChild(mgBtn);
+      }
       const btn = document.createElement('button');
       btn.className = 'settings-btn';
-      btn.textContent = op === 'uninstall' ? '卸载中...' : '卸载';
+      btn.textContent = op === 'uninstall' ? t('pluginUninstalling') : t('pluginUninstallBtn');
       btn.disabled = !!op || pluginBusy;
       btn.addEventListener('click', () => uninstallPkg(p.pkg));
+      actions.appendChild(btn);
 
       item.appendChild(info);
-      item.appendChild(btn);
+      item.appendChild(actions);
       installedList.appendChild(item);
     }
   }).catch(() => {
-    installedList.innerHTML = '<div class="installed-empty">插件列表加载失败</div>';
+    installedList.innerHTML = '<div class="installed-empty">' + t('pluginListLoadFail') + '</div>';
+  });
+}
+
+// 检测已安装插件的更新（对比 npm registry 最新版本）
+function checkPluginUpdates() {
+  if (!window.dsh || !window.dsh.checkPluginUpdates) return;
+  if (pluginCheckUpdatesBtn) {
+    pluginCheckUpdatesBtn.disabled = true;
+    pluginCheckUpdatesBtn.textContent = t('pluginCheckingUpdates');
+  }
+  window.dsh.checkPluginUpdates().then((res) => {
+    if (pluginCheckUpdatesBtn) {
+      pluginCheckUpdatesBtn.disabled = false;
+      pluginCheckUpdatesBtn.textContent = t('pluginCheckUpdatesBtn');
+    }
+    const list = (res && res.ok && Array.isArray(res.list)) ? res.list : [];
+    pluginUpdateCheck = {};
+    for (const item of list) {
+      pluginUpdateCheck[item.pkg] = item;
+    }
+    // 刷新已安装列表以展示更新标记
+    loadInstalledList();
+    // 汇总提示
+    const count = list.filter((x) => x.outdated || x.legacyMigrate).length;
+    if (count > 0) {
+      showCustomNote((currentLanguage === 'en' ? count + ' plugin(s) can be updated' : '发现 ' + count + ' 个插件可更新'), '');
+    } else {
+      showCustomNote(currentLanguage === 'en' ? 'All plugins are up to date' : '所有插件均为最新版本', 'ok');
+    }
+  }).catch(() => {
+    if (pluginCheckUpdatesBtn) {
+      pluginCheckUpdatesBtn.disabled = false;
+      pluginCheckUpdatesBtn.textContent = t('pluginCheckUpdatesBtn');
+    }
+    showCustomNote(currentLanguage === 'en' ? 'Failed to check plugin updates' : '插件更新检查失败', 'err');
   });
 }
 
@@ -633,6 +710,10 @@ function doPluginInstall(pkg) {
   refreshPluginLists();
   window.dsh.installPlugin(pkg).then(() => {
     localBusy.delete(pkg);
+    // 安装（更新）完成后清除该插件的更新缓存，避免「更新」按钮残留
+    if (pluginUpdateCheck && pluginUpdateCheck[pkg]) {
+      delete pluginUpdateCheck[pkg];
+    }
     refreshPluginLists();
   }).catch(() => {
     localBusy.delete(pkg);
@@ -697,6 +778,7 @@ pluginDefRefreshBtn.addEventListener('click', () => {
   loadPluginStatus();
   loadInstalledList();
 });
+pluginCheckUpdatesBtn.addEventListener('click', checkPluginUpdates);
 customInstallBtn.addEventListener('click', doCustomInstall);
 customPkgInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doCustomInstall(); });
 
@@ -1095,6 +1177,13 @@ const I18N = {
     pluginReinstallBtn: '卸载重装',
     pluginUninstallBtn: '卸载',
     pluginMigrateBtn: '迁移到新包名',
+    pluginUpgradeBtn: '更新',
+    pluginCheckUpdatesBtn: '检查更新',
+    pluginCheckingUpdates: '检查中...',
+    pluginUpdateAvailable: '可更新 v',
+    pluginUpToDate: '已是最新',
+    pluginLegacyMigrate: '旧包名，可迁移',
+    pluginListLoadFail: '插件列表加载失败',
     stepPrefix: '步骤',
     setUpdateChecking: '正在检查更新...',
     setUpdateDownloading: '正在下载...',
@@ -1210,6 +1299,13 @@ const I18N = {
     pluginReinstallBtn: 'Reinstall',
     pluginUninstallBtn: 'Uninstall',
     pluginMigrateBtn: 'Migrate to New Name',
+    pluginUpgradeBtn: 'Update',
+    pluginCheckUpdatesBtn: 'Check Updates',
+    pluginCheckingUpdates: 'Checking...',
+    pluginUpdateAvailable: 'Update available: v',
+    pluginUpToDate: 'Up to date',
+    pluginLegacyMigrate: 'Legacy package, migrate',
+    pluginListLoadFail: 'Failed to load plugin list',
     stepPrefix: 'Step',
     setUpdateChecking: 'Checking for updates...',
     setUpdateDownloading: 'Downloading...',
@@ -1817,7 +1913,13 @@ if (!window.dsh) {
       ensureCustomLogOpen();
       refreshPluginLists();
     } else if (ev.stage === 'done') {
-      if (ev.pkg) localBusy.delete(ev.pkg);
+      if (ev.pkg) {
+        localBusy.delete(ev.pkg);
+        // 安装（更新）完成后清除该插件的更新缓存，避免「更新」按钮残留
+        if (pluginUpdateCheck && pluginUpdateCheck[ev.pkg]) {
+          delete pluginUpdateCheck[ev.pkg];
+        }
+      }
       showCustomNote((ev.message || '完成') + '，点击下方「立即重启服务」即可生效。', 'ok');
       restartHintCard.hidden = false; // 安装/卸载完成 → 提示"立即重启"
       refreshPluginLists();
