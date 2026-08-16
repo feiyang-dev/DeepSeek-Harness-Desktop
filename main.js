@@ -2317,6 +2317,28 @@ function downloadUpdate() {
 }
 
 // ---------- 安装更新 ----------
+// 启动安装程序（detached，不随本应用退出而终止）；传 --updated 让 NSIS 安装器在
+// 安装完成后自动启动新版应用（与 electron-builder 官方更新流程一致）
+function launchInstaller(filePath) {
+  try {
+    spawn(filePath, ['--updated'], { detached: true, stdio: 'ignore' }).unref();
+    return true;
+  } catch (e) {
+    updateStatus({ status: 'error', error: '无法启动安装程序', message: '无法启动安装程序' });
+    return false;
+  }
+}
+
+// 安装程序已成功启动：延迟退出当前应用，释放正在运行的 exe 文件占用，
+// 否则 NSIS 安装器无法覆盖文件，会出现"应用正在运行/安装冲突"导致只能卸载重装。
+function scheduleQuitForInstall() {
+  updateStatus({ status: 'installing', message: '安装程序已启动，正在退出当前应用...' });
+  const t = setTimeout(() => {
+    if (!quitting) quitApp();
+  }, 1200);
+  if (t && typeof t.unref === 'function') t.unref();
+}
+
 function installUpdate() {
   const filePath = updateState.filePath;
   if (!filePath || !fs.existsSync(filePath)) {
@@ -2328,7 +2350,7 @@ function installUpdate() {
     type: 'question',
     title: '安装更新',
     message: `准备安装 ${APP_NAME}${versionLabel}`,
-    detail: '即将启动安装程序。更新完成后请重新打开应用。',
+    detail: '即将启动安装程序，本应用将自动退出。安装完成后会自动打开新版应用。',
     buttons: ['开始安装', '稍后再说'],
     defaultId: 0,
     cancelId: 1,
@@ -2344,25 +2366,15 @@ function installUpdate() {
     err.then((msg) => {
       if (msg) {
         // 打开失败：回退为直接 spawn
-        try {
-          spawn(filePath, [], { detached: true, stdio: 'ignore' }).unref();
-          updateStatus({ status: 'installing', message: '安装程序已启动' });
-        } catch (e) {
-          updateStatus({ status: 'error', error: '无法启动安装程序', message: '无法启动安装程序' });
-        }
+        if (launchInstaller(filePath)) scheduleQuitForInstall();
       } else {
-        updateStatus({ status: 'installing', message: '安装程序已启动' });
+        scheduleQuitForInstall();
       }
     });
   } else if (err) {
-    try {
-      spawn(filePath, [], { detached: true, stdio: 'ignore' }).unref();
-      updateStatus({ status: 'installing', message: '安装程序已启动' });
-    } catch (e) {
-      updateStatus({ status: 'error', error: '无法启动安装程序', message: '无法启动安装程序' });
-    }
+    if (launchInstaller(filePath)) scheduleQuitForInstall();
   } else {
-    updateStatus({ status: 'installing', message: '安装程序已启动' });
+    scheduleQuitForInstall();
   }
   return { ok: true, message: '安装程序已启动' };
 }
