@@ -45,7 +45,7 @@
 
 - **推荐插件**：一键安装 / 卸载由开发者制作的插件，当前提供两个（安装过程显示在「自定义安装」卡片的命令行日志中，完成后点「立即重启服务」即可生效）：
   - **[用量与消耗插件（dsh-usage）](https://github.com/feiyang-dev/dsh-usage-plugin)**：记录每次调用的 token 用量与缓存命中、按 DeepSeek 峰谷/基础价格计费、用量日历热力图、余额查询、CSV/JSON/PNG 导出
-  - **[数据保险箱（dsh-vault）](https://github.com/feiyang-dev/deepseekharnessdesktop-vault)**：自动备份 `~/.dsh` 数据到 `~/.dsh-backups`、清空检测、一键恢复，保护聊天记录与工作区数据
+  - **[数据保险箱（dsh-vault）](https://github.com/feiyang-dev/dsh-vault)**：自动备份 `~/.dsh` 数据到 `~/.dsh-backups`、清空检测、一键恢复，保护聊天记录与工作区数据
 - **自定义安装**：填写任意 npm 包名或安装命令（如 `@scope/plugin-name` 或 `npm install @scope/plugin-name`），客户端自动执行安装并注册到运行环境；命令行日志在「自定义安装」卡片内实时展示
 - **已安装列表**：展示全部已安装插件（版本 / 注册状态），可逐个卸载
 - 安装逻辑与官方 `dsh plugin add` 等价（npm 装入 profile + 注册 `dsh.profile.bundles`），**重新运行服务后生效**
@@ -63,7 +63,7 @@
 > 不喜欢桌面端也可以直接在命令行安装，效果等价：
 > ```bash
 > dsh plugin --profile web add @feiyang666/deepseekharnessdesktop
-> dsh plugin --profile web add @feiyang666/deepseekharnessdesktop-vault
+> dsh plugin --profile web add @feiyang666/dsh-vault
 > ```
 
 ### 设置与在线更新
@@ -269,7 +269,7 @@ A: 可用。"本地修复"始终走官方快速版 npx 单进程启动，不受�
 | 项目 | 说明 | 安装方式 |
 | --- | --- | --- |
 | [用量与消耗插件（dsh-usage）](https://github.com/feiyang-dev/dsh-usage-plugin) | 每次调用的 token 用量/缓存命中统计、峰谷计费、余额查询、CSV/JSON/PNG 导出 | 桌面端推荐插件一键安装，或 `dsh plugin add @feiyang666/deepseekharnessdesktop` |
-| [数据保险箱（dsh-vault）](https://github.com/feiyang-dev/deepseekharnessdesktop-vault) | 自动备份 / 清空检测 / 一键恢复，保护聊天记录与工作区数据 | 桌面端推荐插件一键安装，或 `dsh plugin add @feiyang666/deepseekharnessdesktop-vault` |
+| [数据保险箱（dsh-vault）](https://github.com/feiyang-dev/dsh-vault) | 自动备份 / 清空检测 / 一键恢复，保护聊天记录与工作区数据 | 桌面端推荐插件一键安装，或 `dsh plugin add @feiyang666/dsh-vault` |
 | [DeepSeek-Harness](https://github.com/deepseek-ai/DeepSeek-Harness) | 官方 CLI / Web 服务 | — |
 
 ---

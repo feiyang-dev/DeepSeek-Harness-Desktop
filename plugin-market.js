@@ -31,7 +31,7 @@ const PER_PAGE = 30;
 // 官方推荐仓库（在全名列表里优先置顶展示，并打上「官方」标签）
 const OFFICIAL_REPOS = [
   'feiyang-dev/dsh-usage-plugin',
-  'feiyang-dev/deepseekharnessdesktop-vault',
+  'feiyang-dev/dsh-vault',
 ];
 
 // 已知的插件图标映射（按 npm 包名）。缺失时用主角 emoji / 首字母占位。

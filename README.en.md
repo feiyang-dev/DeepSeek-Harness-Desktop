@@ -44,7 +44,7 @@ The home screen has an "Install Plugins" entry that opens a dedicated plugin pag
 
 - **Recommended plugins** — one-click install/uninstall of community-built plugins:
   - **[Usage & Cost Tracker (dsh-usage)](https://github.com/feiyang-dev/dsh-usage-plugin)**: per-call token/cache-hit stats, peak/off-peak billing, a usage calendar heatmap, balance query, and CSV/JSON/PNG export.
-  - **[Data Vault (dsh-vault)](https://github.com/feiyang-dev/deepseekharnessdesktop-vault)**: auto-backups `~/.dsh` to `~/.dsh-backups`, detects data wipe, and restores chat history and workspace data with one click.
+  - **[Data Vault (dsh-vault)](https://github.com/feiyang-dev/dsh-vault)**: auto-backups `~/.dsh` to `~/.dsh-backups`, detects data wipe, and restores chat history and workspace data with one click.
 - **Custom install** — enter any npm package name or install command; the client installs it and registers it in the runtime profile. Command-line output is shown live in the custom-install card.
 - **Installed list** — shows all installed plugins (version / registration status) with per-plugin uninstall.
 - The install logic is equivalent to the official `dsh plugin add` (npm into profile + register `dsh.profile.bundles`); **restart the service to take effect**.
@@ -52,7 +52,7 @@ The home screen has an "Install Plugins" entry that opens a dedicated plugin pag
 > Prefer the command line? The equivalent commands work too:
 > ```bash
 > dsh plugin --profile web add @feiyang666/deepseekharnessdesktop
-> dsh plugin --profile web add @feiyang666/deepseekharnessdesktop-vault
+> dsh plugin --profile web add @feiyang666/dsh-vault
 > ```
 
 ### Other Features
@@ -172,7 +172,7 @@ A: Choose "Full Source Build" mode. The source is cloned to `%APPDATA%/dsh-deskt
 | Project | Description | Installation |
 | --- | --- | --- |
 | [Usage & Cost Tracker (dsh-usage)](https://github.com/feiyang-dev/dsh-usage-plugin) | Per-call token/cache-hit stats, peak/off-peak billing, balance query, CSV/JSON/PNG export | One-click from the desktop app's recommended plugins, or `dsh plugin add @feiyang666/deepseekharnessdesktop` |
-| [Data Vault (dsh-vault)](https://github.com/feiyang-dev/deepseekharnessdesktop-vault) | Auto backup / wipe detection / one-click restore — protects chat history and workspace data | One-click from the desktop app's recommended plugins, or `dsh plugin add @feiyang666/deepseekharnessdesktop-vault` |
+| [Data Vault (dsh-vault)](https://github.com/feiyang-dev/dsh-vault) | Auto backup / wipe detection / one-click restore — protects chat history and workspace data | One-click from the desktop app's recommended plugins, or `dsh plugin add @feiyang666/dsh-vault` |
 | [DeepSeek-Harness](https://github.com/deepseek-ai/DeepSeek-Harness) | Official CLI / Web service | — |
 
 ---

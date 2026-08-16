@@ -1,15 +1,18 @@
-# DeepSeek Harness 桌面版 v1.8.0
+# DeepSeek Harness 桌面版 v1.8.1
 
 **DeepSeek Harness 官方 Web UI 的 Windows 桌面客户端** —— 自动检测环境、安装依赖、拉起服务，并支持在线检查更新，开箱即用。
 
 ## 安装方式
 
-下载 **`DeepSeek Harness 桌面版-Setup-1.8.0.exe`**（NSIS 安装包），双击安装即可。
+下载 **`DeepSeek Harness 桌面版-Setup-1.8.1.exe`**（NSIS 安装包），双击安装即可。
 
 - 未安装 Node.js / git 时，客户端会自动下载官方安装包静默补齐
 - macOS 用户：可在 GitHub Actions 运行页的 Artifacts 中下载 `dsh-desktop-mac`（Intel / Apple Silicon 双架构）
 
-## 本版更新（v1.8.0）
+## 本版更新（v1.8.1）
+
+### 数据保险箱插件改名
+- 数据保险箱插件包名由 `@feiyang666/deepseekharnessdesktop-vault` 统一更名为 `@feiyang666/dsh-vault`，已安装旧包名的插件会自动兼容识别，插件管理 / 首页 / 文档同步更新
 
 ### 插件卸载修复
 - **卸载插件更快更干净**：此前卸载走 `npm uninstall`，在 pnpm 布局 + 清单与锁文件不同步时，会尝试重建整个依赖树并访问默认源，出现「卸载很慢 / 像卡住 / 残留目录删不干净」；现改为纯本地文件操作，秒级完成，残留实体目录与 pnpm 虚拟目录一并清理

@@ -18,7 +18,10 @@ const os = require('node:os');
 const path = require('node:path');
 
 const PLUGIN_PKG = '@feiyang666/deepseekharnessdesktop';
-const PLUGIN_VAULT_PKG = '@feiyang666/deepseekharnessdesktop-vault';
+const PLUGIN_VAULT_PKG = '@feiyang666/dsh-vault';
+// 旧包名兼容：已按旧名安装的用户在升级时仍能命中推荐识别与 schema 补丁
+const PLUGIN_VAULT_PKG_LEGACY = '@feiyang666/deepseekharnessdesktop-vault';
+const PLUGIN_VAULT_PKGS = [PLUGIN_VAULT_PKG, PLUGIN_VAULT_PKG_LEGACY];
 const DEFAULT_PROFILE = 'web';
 
 // 推荐插件列表（桌面端「插件管理」页推荐区域展示）
@@ -339,7 +342,7 @@ async function installPlugin(options) {
     writeJson(manifestPath(dir), manifest);
   }
   // 已知插件兼容性补丁（dsh-vault schema 修正）：匹配到旧写法时替换，消除工具注册报警
-  if (name === '@feiyang666/deepseekharnessdesktop-vault') {
+  if (PLUGIN_VAULT_PKGS.includes(name)) {
     applyVaultSchemaPatch(pkgDir);
   }
   return {
@@ -552,6 +555,8 @@ function removeLegacyPatchRow(cordisPath, pkgName) {
 module.exports = {
   PLUGIN_PKG,
   PLUGIN_VAULT_PKG,
+  PLUGIN_VAULT_PKG_LEGACY,
+  PLUGIN_VAULT_PKGS,
   DEFAULT_PROFILE,
   BASE_PKGS,
   RECOMMENDED_PLUGINS,

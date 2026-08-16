@@ -6,10 +6,10 @@ const { spawnSync } = require('node:child_process');
 
 // 用法: node --use-system-ca gh-upload-mac.js <序号 1-4>
 const FILES = [
-  'DeepSeek Harness 桌面版-1.8.0-mac-arm64.dmg',
-  'DeepSeek Harness 桌面版-1.8.0-mac-x64.dmg',
-  'DeepSeek Harness 桌面版-1.8.0-mac-arm64.zip',
-  'DeepSeek Harness 桌面版-1.8.0-mac-x64.zip',
+  'DeepSeek Harness 桌面版-1.8.1-mac-arm64.dmg',
+  'DeepSeek Harness 桌面版-1.8.1-mac-x64.dmg',
+  'DeepSeek Harness 桌面版-1.8.1-mac-arm64.zip',
+  'DeepSeek Harness 桌面版-1.8.1-mac-x64.zip',
 ];
 const IDX = parseInt(process.argv[2], 10);
 if (!(IDX >= 1 && IDX <= FILES.length)) { console.error('用法: node gh-upload-mac.js <1-4>'); process.exit(1); }
@@ -57,7 +57,7 @@ if ($r) { $r[1].Trim() } else { "" }
 const TOKEN = readGitHubToken();
 const OWNER = 'feiyang-dev';
 const REPO = 'DeepSeek-Harness-Desktop';
-const RELEASE_ID = '371227419';
+const RELEASE_ID = '371287442';
 
 function uploadAsset(filePath) {
   return new Promise((resolve, reject) => {

@@ -1,5 +1,9 @@
 # DeepSeek Harness 桌面版 - 更新日志
 
+## v1.8.1 (2026-08-16)
+
+- **数据保险箱插件改名**：数据保险箱插件包名由 `@feiyang666/deepseekharnessdesktop-vault` 统一更名为 `@feiyang666/dsh-vault`，已安装旧包名的插件会自动兼容识别，插件管理 / 首页 / 文档同步更新
+
 ## v1.8.0 (2026-08-16)
 
 - **插件卸载修复**：此前卸载插件走 `npm uninstall`，在 pnpm 布局 + 清单与锁文件不同步时，npm 会尝试重建整个依赖树并访问默认源，导致「卸载很慢 / 像卡住 / 残留目录删不干净」。现改为纯本地文件操作（移除依赖声明、剥离 lockfile 残留引用、直接删除实体目录与 pnpm 虚拟目录），卸载秒级完成；目录被占用时再以 `npm uninstall --offline` 离线兜底，不再依赖网络
@@ -24,7 +28,7 @@
 - **插件管理页重构**：自定义安装 / 推荐插件 / 已安装插件改为上下贯通的全宽面板布局，告别旧的两列堆叠
 - 侧栏常驻显示服务运行状态（运行中 / 未运行）与版本号
 - 新增 `plugin-market.js`（纯 Node 插件市场扫描模块，可独立测试），并纳入打包文件列表
-- **插件兼容性自动修补**：`@feiyang666/deepseekharnessdesktop-vault` 注册 `backup_vault` 工具时把 `required: true` 误写在 `boolean` 字段上（违反 JSON Schema 规范），导致启动时打印 `backup_vault 工具注册失败（不影响备份/恢复）` 警告。安装 / 升级该插件后会自动把 `required` 挪到 schema 顶层，消除此报警
+- **插件兼容性自动修补**：`@feiyang666/dsh-vault` 注册 `backup_vault` 工具时把 `required: true` 误写在 `boolean` 字段上（违反 JSON Schema 规范），导致启动时打印 `backup_vault 工具注册失败（不影响备份/恢复）` 警告。安装 / 升级该插件后会自动把 `required` 挪到 schema 顶层，消除此报警
 - **macOS 打包支持**：新增 `npm run dist:mac` / `pack:mac`（dmg + zip，未签名构建），新增 mac 打包图标 `assets/icon-1024.png`
 - macOS 运行兼容：进程清理改用 pgrep/lsof、托盘单击恢复主界面、支持 Homebrew 的 npm/pnpm 路径探测
 - **GitHub Actions macOS 云打包**：新增 `.github/workflows/build-mac.yml`，Windows 上推送代码 / 打 `v*` 标签即自动在 macOS runner 上产出 Intel + Apple Silicon 双架构 dmg/zip（无需自备 Mac）

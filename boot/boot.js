@@ -419,7 +419,7 @@ function appendCustomLog(text) {
 
 // 推荐插件图标（按包名区分）
 function recIconFor(pkg) {
-  if (pkg === '@feiyang666/deepseekharnessdesktop-vault') {
+  if (['@feiyang666/dsh-vault', '@feiyang666/deepseekharnessdesktop-vault'].includes(pkg)) {
     return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>';
   }
   return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
@@ -431,7 +431,7 @@ function buildRecItem(p) {
   item.className = 'plugin-rec';
 
   const icon = document.createElement('div');
-  icon.className = 'plugin-rec-icon' + (p.pkg === '@feiyang666/deepseekharnessdesktop-vault' ? ' vault' : '');
+  icon.className = 'plugin-rec-icon' + (['@feiyang666/dsh-vault', '@feiyang666/deepseekharnessdesktop-vault'].includes(p.pkg) ? ' vault' : '');
   icon.innerHTML = recIconFor(p.pkg);
 
   const info = document.createElement('div');
@@ -554,7 +554,7 @@ function loadInstalledList() {
       } else {
         meta.textContent = 'v' + (p.version || '?');
       }
-      if (['@feiyang666/deepseekharnessdesktop', '@feiyang666/deepseekharnessdesktop-vault'].includes(p.pkg)) {
+      if (['@feiyang666/deepseekharnessdesktop', '@feiyang666/dsh-vault', '@feiyang666/deepseekharnessdesktop-vault'].includes(p.pkg)) {
         const rec = document.createElement('span');
         rec.className = 'installed-badge rec';
         rec.textContent = '推荐';
