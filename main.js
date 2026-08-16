@@ -288,8 +288,77 @@ function which(cmd) {
   });
 }
 
+// 官方 Node.js MSI 的常见安装位置（机器级 + 每用户安装），用于 PATH 未刷新时仍能定位 node.exe
+function knownNodeDirs() {
+  const dirs = [];
+  if (isWin) {
+    const prog = process.env['ProgramFiles'] || 'C:\\Program Files';
+    const prog86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const local = process.env['LOCALAPPDATA'] || path.join(os.homedir(), 'AppData', 'Local');
+    dirs.push(path.join(prog, 'nodejs'));
+    dirs.push(path.join(prog86, 'nodejs'));
+    dirs.push(path.join(local, 'Programs', 'nodejs'));
+    // nvm-windows 常见布局：<NVM_HOME>\v<version>
+    const nvmHome = process.env['NVM_HOME'];
+    if (nvmHome) {
+      try {
+        for (const e of fs.readdirSync(nvmHome)) {
+          if (/^v\d+/.test(e)) dirs.push(path.join(nvmHome, e));
+        }
+      } catch (_) { /* ignore */ }
+    }
+  } else {
+    // macOS / Linux：Homebrew / 官方 pkg / nvm
+    dirs.push('/usr/local/bin');
+    dirs.push('/opt/homebrew/bin');
+    dirs.push('/usr/bin');
+  }
+  return dirs;
+}
+
+function findNodeExeSyncFallback() {
+  const name = isWin ? 'node.exe' : 'node';
+  for (const d of knownNodeDirs()) {
+    const p = path.join(d, name);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 async function findNodeExe() {
-  return which('node');
+  const w = await which('node');
+  if (w) return w;
+  // PATH 未刷新（刚安装 / 未加入 PATH）时，回退到官方安装目录定位
+  return findNodeExeSyncFallback();
+}
+
+// 官方 Git for Windows 的常见安装位置（机器级 + 每用户），用于 PATH 未刷新时仍能定位 git.exe
+function knownGitDirs() {
+  const dirs = [];
+  if (isWin) {
+    const prog = process.env['ProgramFiles'] || 'C:\\Program Files';
+    const prog86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const local = process.env['LOCALAPPDATA'] || path.join(os.homedir(), 'AppData', 'Local');
+    dirs.push(path.join(prog, 'Git', 'cmd'));
+    dirs.push(path.join(prog86, 'Git', 'cmd'));
+    dirs.push(path.join(local, 'Programs', 'Git', 'cmd'));
+  } else {
+    dirs.push('/usr/bin');
+    dirs.push('/usr/local/bin');
+    dirs.push('/opt/homebrew/bin');
+  }
+  return dirs;
+}
+
+async function findGitExe() {
+  const w = await which('git');
+  if (w) return w;
+  const name = isWin ? 'git.exe' : 'git';
+  for (const d of knownGitDirs()) {
+    const p = path.join(d, name);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
 }
 
 async function findNpmCli() {
@@ -328,6 +397,155 @@ async function findNpmPrefix() {
   const r = await runCommand(nodeExe, [npmCli, 'prefix', '-g'], null, () => {});
   const prefix = String(r.out).trim().split(/\r?\n/).pop().trim();
   return prefix || null;
+}
+
+// ============================================================
+//  官方运行环境自动补齐（Node.js / git，均下载正版官方安装包）
+// ============================================================
+
+// 下载文件到本地（支持 30x 重定向，回传下载进度），返回目标路径
+function downloadToFile(url, destPath, onProgress) {
+  return new Promise((resolve, reject) => {
+    const mod = url.startsWith('https') ? https : http;
+    const req = mod.get(url, { headers: { 'User-Agent': `dsh-desktop/${appVersion()}` }, timeout: 30000 }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        req.destroy();
+        return resolve(downloadToFile(res.headers.location, destPath, onProgress));
+      }
+      if (res.statusCode !== 200) {
+        req.destroy();
+        return reject(new Error(`下载失败（HTTP ${res.statusCode}）`));
+      }
+      const total = parseInt(res.headers['content-length'] || '0', 10) || 0;
+      const file = fs.createWriteStream(destPath);
+      let received = 0;
+      res.on('data', (c) => {
+        received += c.length;
+        if (onProgress) onProgress(received, total);
+      });
+      res.pipe(file);
+      file.on('finish', () => file.close(() => resolve(destPath)));
+      file.on('error', reject);
+      req.on('error', reject);
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('下载超时')); });
+    req.on('error', reject);
+  });
+}
+
+// 解析官方最新 LTS 版本号（失败时回退到固定稳定版本）
+async function resolveLatestNodeVersion() {
+  try {
+    const data = await httpJsonRequest('https://nodejs.org/dist/index.json', 20000);
+    if (Array.isArray(data)) {
+      const lts = data.find((v) => v && v.lts);
+      if (lts && lts.version) return String(lts.version).replace(/^v/, '');
+      const stable = data.find((v) => v && v.version);
+      if (stable && stable.version) return String(stable.version).replace(/^v/, '');
+    }
+  } catch (e) { /* 回退 */ }
+  return '20.18.1'; // 官方 LTS 兜底版本
+}
+
+// 自动安装官方 Node.js（MSI 静默每用户安装，无需管理员权限）
+// 返回是否安装成功（随后可经 findNodeExe 定位 node.exe）
+async function installNodeOfficial() {
+  setProgress(9, 'detect', '未检测到 Node.js，正在自动安装官方 Node.js（LTS）...',
+    '首次使用需安装 Node.js 运行环境（含 npm）', '自动下载官方安装包并静默安装，请耐心等待');
+  logLine('[环境] 未检测到 Node.js，开始自动安装官方 Node.js（LTS）...');
+
+  const version = await resolveLatestNodeVersion();
+  const url = `https://nodejs.org/dist/v${version}/node-v${version}-x64.msi`;
+  const tmp = path.join(app.getPath('temp'), `node-v${version}-x64.msi`);
+  logLine(`[环境] 下载官方安装包：${url}`);
+
+  try {
+    await downloadToFile(url, tmp, (received, total) => {
+      if (total > 0) {
+        const pct = 9 + Math.round((received / total) * 6);
+        setProgress(pct, 'detect', `正在下载 Node.js v${version}（${formatBytes(received)} / ${formatBytes(total)}）...`);
+      }
+    });
+  } catch (e) {
+    logLine(`[环境] Node.js 下载失败：${e.message}`);
+    return false;
+  }
+
+  setProgress(15, 'detect', `正在安装 Node.js v${version}...`, '静默安装官方安装包', '安装完成后会自动写入用户环境变量（新终端生效）');
+  logLine('[环境] 正在静默安装 Node.js（msiexec /qn，每用户模式）...');
+  const msiexec = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'msiexec.exe') : 'msiexec';
+  const r = await runCommand(msiexec, ['/i', tmp, '/qn', '/norestart', 'MSIINSTALLPERUSER=1'], null, (s) => {
+    const line = String(s).replace(/\r?\n$/, '');
+    if (line.trim()) logLine('[环境] ' + line);
+  });
+  // msiexec 返回 0 为成功，3010 为"成功但需重启"；两者都视为安装成功
+  if (r.code !== 0 && r.code !== 3010) {
+    logLine(`[环境] Node.js 安装失败（msiexec 退出码 ${r.code}）`);
+    return false;
+  }
+
+  // 安装后定位 node.exe（PATH 可能尚未刷新，直接按官方安装目录查找）
+  const nodeExe = findNodeExeSyncFallback() || (await which('node'));
+  if (!nodeExe) {
+    logLine('[环境] Node.js 安装完成但未找到 node.exe，请重启本应用后重试');
+    return false;
+  }
+  logLine(`[环境] Node.js 安装完成：${nodeExe}`);
+  return true;
+}
+
+// 解析官方最新 Git for Windows 版本号（失败时回退到固定稳定版本）
+async function resolveLatestGitVersion() {
+  try {
+    const data = await httpJsonRequest('https://api.github.com/repos/git-for-windows/git/releases/latest', 20000);
+    const tag = data && data.tag_name;
+    if (tag) return String(tag).replace(/^v/, '');
+  } catch (e) { /* 回退 */ }
+  return '2.47.1.windows.2'; // 官方稳定版兜底
+}
+
+// 自动安装官方 Git for Windows（每用户静默安装，无需管理员权限）
+// 返回是否安装成功（随后可经 findGitExe 定位 git.exe）
+async function installGitOfficial() {
+  setProgress(31, 'install', '未检测到 git，正在自动安装官方 Git for Windows...',
+    '源码完整安装需要 git 工具', '自动下载官方安装包并静默安装，请耐心等待');
+  logLine('[环境] 未检测到 git，开始自动安装官方 Git for Windows...');
+
+  const version = await resolveLatestGitVersion();
+  const url = `https://github.com/git-for-windows/git/releases/download/v${version}/Git-${version}-64-bit.exe`;
+  const tmp = path.join(app.getPath('temp'), `Git-${version}-64-bit.exe`);
+  logLine(`[环境] 下载官方安装包：${url}`);
+
+  try {
+    await downloadToFile(url, tmp, (received, total) => {
+      if (total > 0) {
+        const pct = 31 + Math.round((received / total) * 3);
+        setProgress(pct, 'install', `正在下载 Git for Windows（${formatBytes(received)} / ${formatBytes(total)}）...`);
+      }
+    });
+  } catch (e) {
+    logLine(`[环境] Git 下载失败：${e.message}`);
+    return false;
+  }
+
+  setProgress(34, 'install', `正在安装 Git for Windows v${version}...`, '静默安装官方安装包', '安装完成后会自动写入用户环境变量（新终端生效）');
+  logLine('[环境] 正在静默安装 Git for Windows（每用户模式）...');
+  const r = await runCommand(tmp, ['/VERYSILENT', '/CURRENTUSER', '/NORESTART', '/NOCANCEL', '/SP-', '/CLOSEAPPLICATIONS', '/RESTARTAPPLICATIONS'], null, (s) => {
+    const line = String(s).replace(/\r?\n$/, '');
+    if (line.trim()) logLine('[环境] ' + line);
+  });
+  if (r.code !== 0) {
+    logLine(`[环境] Git 安装失败（安装器退出码 ${r.code}）`);
+    return false;
+  }
+
+  const gitExe = await findGitExe();
+  if (!gitExe) {
+    logLine('[环境] Git 安装完成但未找到 git.exe，请重启本应用后重试');
+    return false;
+  }
+  logLine(`[环境] Git 安装完成：${gitExe}`);
+  return true;
 }
 
 // 通用子进程执行器：转发原始输出到日志面板，并返回 { code, out }
@@ -670,11 +888,15 @@ async function findPnpmCli() {
 }
 
 async function sourceInstall(nodeExe) {
-  // 1) 检测 git / pnpm
+  // 1) 检测 git / pnpm（git 缺失时自动安装官方 Git for Windows）
   setProgress(30, 'install', '正在检测 git 与 pnpm...');
-  const gitPath = await which('git');
+  let gitPath = await findGitExe();
   if (!gitPath) {
-    return { ok: false, error: '未检测到 git，请先安装 https://git-scm.com/' };
+    const ok = await installGitOfficial();
+    gitPath = ok ? (await findGitExe()) : null;
+    if (!gitPath) {
+      return { ok: false, error: '未检测到 git，且自动安装失败。请手动从 https://git-scm.com/ 安装后重试。' };
+    }
   }
   logLine(`[检测] git: ${gitPath}`);
 
@@ -717,7 +939,7 @@ async function sourceInstall(nodeExe) {
     setProgress(40, 'install', '正在克隆 deepseek-harness 源码仓库...',
       '从 GitHub 拉取完整项目源码', '仓库含约 1000 个文件，取决于网络速度，请耐心等待');
     fs.mkdirSync(app.getPath('userData'), { recursive: true });
-    const r = await runCommand('git', ['clone', '--progress', REPO_URL, repoPath], {}, (s) => {
+    const r = await runCommand(gitPath, ['clone', '--progress', REPO_URL, repoPath], {}, (s) => {
       // git 进度行（Receiving objects: 45%）驱动进度
       const m = s.match(/Receiving objects:\s+(\d+)%/i);
       if (m) setProgress(40 + Number(m[1]) * 0.12, 'install', '正在克隆源码仓库...',
@@ -859,10 +1081,16 @@ function startWebViaNpx(nodeExe, npmCli) {
   baseEnv.npm_config_ignore_scripts = 'true';
   baseEnv.npm_config_progress = 'true';
   baseEnv.NPM_CONFIG_LOGLEVEL = 'info';
+  // 关键：显式指定 npm 镜像源（国内默认 npmmirror）。
+  // 之前这里没设置，npx 会退回默认源 npmjs.org，在国内网络下下载
+  // @deepseek-ai/dsh 慢到 500+ 秒仍装不上——这正是"快速/修复模式装不了"的根因；
+  // 脚本 start-web.bat 里用 `npm config set registry npmmirror` 才能 1 分多钟装好。
+  baseEnv.npm_config_registry = npmRegistry;
   // npm exec --yes -- <pkg> <args>：`--` 之后为包名与 dsh 子命令参数
   const args = ['exec', '--yes', '--', PKG_NAME, 'web', '--host', host, '--port', String(port)];
 
-  let retriedOffline = false; // 是否已用缓存版本兜底重试过（防无限重启）
+  let retriedRegistry = false; // 是否已切换过镜像重试（防无限切换）
+  let retriedOffline = false;  // 是否已用缓存版本兜底重试过（防无限重启）
   let started = false;
   let startupOutput = '';     // 记录启动输出，用于失败诊断
   let child = null;
@@ -896,6 +1124,18 @@ function startWebViaNpx(nodeExe, npmCli) {
     child.on('exit', (code, signal) => {
       // 若该子进程已不是当前服务进程（用户主动停止/重启时 serverProc 已被置空），忽略其退出
       if (quitting || serverProc !== child) return;
+      // 镜像类失败（网络不通 / 404 缺包 / 超时等）：先切换到下一个镜像重试一次
+      // （与 pnpm / 插件安装的失败切换策略一致）
+      if (!started && !retriedRegistry && MIRROR_FAIL_RE.test(startupOutput)) {
+        const next = nextRegistry();
+        if (next) {
+          retriedRegistry = true;
+          logLine(`[镜像] 当前镜像不可用，切换到 ${next} 重试...`);
+          serverProc = null;
+          spawnOnce({ npm_config_registry: next });
+          return;
+        }
+      }
       // 离线兜底：npm exec 解析 registry 最新版失败（网络 / 镜像不可达）时，
       // 用 --prefer-offline 回退到 npx 缓存中已有的 dsh 版本继续启动（首次启动仍需要网络）
       if (!started && !retriedOffline && MIRROR_FAIL_RE.test(startupOutput)) {
@@ -1053,8 +1293,14 @@ async function ensureSourceRepoReady(nodeExe, npmCli) {
 async function quitApp() {
   if (quitting) return;
   quitting = true;
-  await stopWebService();
-  await stopDevWebWatcher();
+  // 兜底：即使子进程清理（taskkill）卡住，也保证 5 秒内强制退出，
+  // 修复"停止运行有效但退出 APP 无作用"的问题。
+  const forceTimer = setTimeout(() => { app.exit(0); }, 5000);
+  if (forceTimer && typeof forceTimer.unref === 'function') forceTimer.unref();
+  try {
+    await stopWebService();
+    await stopDevWebWatcher();
+  } catch (e) { /* ignore */ }
   app.quit();
 }
 
@@ -1147,8 +1393,8 @@ async function run() {
     ? MODE_STEPS.quickDev
     : (MODE_STEPS[selectedMode] || MODE_STEPS.quick);
 
-  // 0.1) 并发测速选择最快 npm 镜像（不阻塞主流程，安装时自动使用最快源；结果缓存，插件安装复用）
-  ensureRegistrySelected();
+  // 0.1) 并发测速选择最快 npm 镜像（等待选出最快源后再安装，避免用默认源 npmjs.org 装不上；结果缓存，插件安装复用）
+  await ensureRegistrySelected();
 
   // 1) 确保端口已释放再启动新服务：等待启动瞬间的端口清理完成（最长 10s），
   //    超时则强制终止端口占用进程并等待释放，避免旧服务/残留进程抢占端口导致
@@ -1169,12 +1415,17 @@ async function run() {
     logLine('[警告] 端口 ' + port + ' 仍被占用，新服务可能启动失败');
   }
 
-  // 1) 环境检测
+  // 1) 环境检测：缺失时自动安装官方 Node.js（含 npm），
+  //    不再只给官网链接把用户推向"修复模式"形成引导死循环。
   setProgress(8, 'detect', '正在检测 Node.js 运行环境...');
-  const nodeExe = await findNodeExe();
+  let nodeExe = await findNodeExe();
   if (!nodeExe) {
-    bootError('未检测到 Node.js。请访问 https://nodejs.org/ 安装后重新启动本应用。');
-    return;
+    const installed = await installNodeOfficial();
+    nodeExe = installed ? (await findNodeExe()) : null;
+    if (!nodeExe) {
+      bootError('未检测到 Node.js，且自动安装失败。请手动从 https://nodejs.org/ 下载 LTS 版安装后，重新启动本应用。');
+      return;
+    }
   }
   setProgress(18, 'detect', 'Node.js 环境正常');
 
@@ -1298,7 +1549,9 @@ function reportDshVersion() {
       const nodeExe = await findNodeExe();
       const npmCli = await findNpmCli();
       if (!nodeExe || !npmCli) return;
-      const r = await runCommand(nodeExe, [npmCli, 'exec', '--yes', '--silent', '--', PKG_NAME, '--version'], { env: cleanServiceEnv() }, () => {});
+      const env = cleanServiceEnv();
+      env.npm_config_registry = npmRegistry; // 同 npx 启动：走国内镜像，避免默认源慢/卡
+      const r = await runCommand(nodeExe, [npmCli, 'exec', '--yes', '--silent', '--', PKG_NAME, '--version'], { env }, () => {});
       const line = String(r.out || '').split(/\r?\n/).map((s) => s.trim()).find((s) => /^v?\d+\.\d+\.\d+/.test(s));
       if (line) {
         serviceState.dshVersion = line.replace(/^v/, '');
@@ -1312,7 +1565,9 @@ function reportDshVersion() {
 // 显示 / 重建 WebUI 主窗口（运行中或重新运行后调用）
 function showMainWindow() {
   if (mainWindow && !mainWindow.isDestroyed()) {
-    try { mainWindow.loadURL(`http://${host}:${port}`); } catch (e) { /* ignore */ }
+    // 已有窗口直接恢复显示，绝不 reload：
+    // 之前的 loadURL 会把用户当前停留的页面强制刷新回根路径，导致
+    // 托盘"打开主界面"打开的并非用户初始进入的页面（甚至卡在加载中）。
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
     mainWindow.focus();
@@ -1532,13 +1787,11 @@ app.on('window-all-closed', () => {
   quitApp();
 });
 
-app.on('before-quit', async (e) => {
+app.on('before-quit', (e) => {
   if (quitting) return;
+  // 未经过 quitApp 的退出路径（如系统关机/注销/任务管理器结束）：阻止退出，走统一清理流程
   e.preventDefault();
-  quitting = true;
-  await stopWebService();
-  await stopDevWebWatcher();
-  app.quit();
+  quitApp();
 });
 
 // IPC
@@ -1556,10 +1809,7 @@ ipcMain.handle('boot:retry', async () => {
 });
 
 ipcMain.handle('boot:quit', async () => {
-  quitting = true;
-  await stopWebService();
-  await stopDevWebWatcher();
-  app.quit();
+  await quitApp();
   return true;
 });
 

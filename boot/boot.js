@@ -183,10 +183,11 @@ function showScreen(name) {
   pluginScreen.hidden = name !== 'plugin';
   marketScreen.hidden = name !== 'market';
   settingsScreen.hidden = name !== 'settings';
-  // 侧栏：进度页（全屏覆盖）时隐藏，其余页面显示
-  if (sidebar) sidebar.hidden = name === 'progress';
-  if (shell) shell.classList.toggle('no-sidebar', name === 'progress');
-  syncNavActive(name);
+  // 侧栏：所有页面（含启动进度页）都常驻显示，保证启动过程中也能看到导航
+  if (sidebar) sidebar.hidden = false;
+  if (shell) shell.classList.remove('no-sidebar');
+  // 进度页属于"首页"的启动流程，高亮「首页」导航项
+  syncNavActive(name === 'progress' ? 'home' : name);
   if (name !== 'home') stopUptimeTicker();
 }
 
