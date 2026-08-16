@@ -69,7 +69,7 @@ A "Plugin Market" entry in the left navigation scans GitHub public repos tagged 
 
 The "Settings" entry (left navigation) opens the settings page:
 
-- **About**: app version, changelog, update service status
+- **About**: app version, changelog
 - **Appearance**: interface theme with three options — **Dark / Light / Follow System** (persisted, takes effect immediately, **synced across the desktop client and the official Web UI — change it on either side and the other follows**)
 - **Notifications**: toggle for new-version system notifications (persisted)
 - **Developer options**: toggle "Developer options mode" (persisted, applies on next launch)

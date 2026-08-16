@@ -104,7 +104,6 @@ const setVersion = document.getElementById('setVersion');
 const setAppName = document.getElementById('setAppName');
 const setTagline = document.getElementById('setTagline');
 const setChangelog = document.getElementById('setChangelog');
-const setUpdateBase = document.getElementById('setUpdateBase');
 const setNotifyToggle = document.getElementById('setNotifyToggle');
 const themeDarkBtn = document.getElementById('themeDarkBtn');
 const themeLightBtn = document.getElementById('themeLightBtn');
@@ -1462,9 +1461,6 @@ function loadSettings() {
         sidebarRepo.href = cfg.repoUrl;
       }
       applyI18n();
-      if (cfg.updateApiBase) {
-        setUpdateBase.textContent = (currentLanguage === 'en' ? 'Update service: ' : '更新服务：') + cfg.updateApiBase;
-      }
       if (cfg.changelog) {
         setChangelog.innerHTML = renderMarkdown(cfg.changelog);
       } else {
