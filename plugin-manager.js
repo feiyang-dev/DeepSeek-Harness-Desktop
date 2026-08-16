@@ -119,32 +119,49 @@ function ensureProfile(dir) {
 }
 
 // ------------------------------------------------------------
-//  包名 / 安装命令校验
+//  包名 / 安装命令解析
 // ------------------------------------------------------------
-// 用户可填写 npm 包 spec（包名、@scope/包名、包名@版本、git/tarball 地址等），
-// 也可以直接粘贴 `npm install <pkg>` 形式的完整命令。
-// 仅允许安全字符（不含 shell 元字符），返回可安全传入 npm install 的参数数组。
-const SPEC_TOKEN_RE = /^[A-Za-z0-9@._+~^:=\/#%\[\]-]+$/;
-
+// 不做限制：用户给什么命令就安装什么。支持：
+//   - 纯包名：@scope/plugin-name、plugin-name@1.2.3、git/tarball 地址等
+//   - npm 命令：npm install <pkg> / npm i <pkg> / npm add <pkg>
+//   - npx 命令：npx @deepseek-ai/dsh plugin --profile web add <pkg>
+//   - node / pnpm 等任意命令
+// 返回统一结构：
+//   { ok: true, type: 'pkg', pkg }                 -> 走标准安装（带镜像切换 + bundles 注册）
+//   { ok: true, type: 'command', command, tokens } -> 原样执行用户命令（spawn 数组参数，不经 shell）
+//   { ok: false, error }                           -> 非法输入
 function validatePkgSpec(input) {
   const raw = String(input || '').trim();
   if (!raw) return { ok: false, error: '请输入要安装的插件包名或安装命令' };
-  // 剥离可选的 "npm install" / "npm i" / "npm add" 前缀
-  let rest = raw.replace(/^(npm\s+(install|i|add))(\s+|$)/i, '').trim();
-  if (!rest) return { ok: false, error: '未识别到包名，请填写类似 @scope/plugin-name 的内容' };
-  const tokens = rest.split(/\s+/);
-  if (tokens.length > 8) return { ok: false, error: '安装命令过长，只支持包名 + 少量参数' };
-  for (const t of tokens) {
-    if (!SPEC_TOKEN_RE.test(t)) {
-      return { ok: false, error: `包含不支持的字符：${t}（仅支持包名/版本/地址，不支持 shell 命令）` };
+  // 按空白拆分为命令 token（数组参数传给 spawn，不经 shell，无注入风险）
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const first = tokens[0] || '';
+
+  // 以 npx / npm / node / pnpm 开头 → 原样执行用户命令
+  if (/^(npx|npm|node|pnpm)$/i.test(first)) {
+    const cmd = first.toLowerCase();
+    // `npm install <pkg>` / `npm i <pkg>` / `npm add <pkg>` 且剩余为单个包 spec：
+    // 剥离前缀走标准安装（享受镜像自动切换），其余一律原样执行
+    if (cmd === 'npm' || cmd === 'pnpm') {
+      const sub = (tokens[1] || '').toLowerCase();
+      const rest = tokens.slice(2);
+      if ((sub === 'install' || sub === 'i' || sub === 'add') && rest.length >= 1 && !rest[0].startsWith('-')) {
+        if (rest.length === 1) {
+          return { ok: true, type: 'pkg', pkg: rest[0] };
+        }
+        // 带额外参数（如 --save-dev）：原样执行
+      }
     }
+    return { ok: true, type: 'command', command: raw, tokens };
   }
-  // 去掉常见误填的危险标记
-  const joined = tokens.join(' ');
-  if (/&&|\|\||[;<>`$]|\(|\)/.test(joined)) {
-    return { ok: false, error: '不支持 shell 拼接命令，请只填写 npm 包名' };
+
+  // 其他可执行命令（git 地址、脚本等）：原样执行
+  if (/\s/.test(raw)) {
+    return { ok: true, type: 'command', command: raw, tokens };
   }
-  return { ok: true, pkg: tokens[0], args: tokens };
+
+  // 纯包名 / 包 spec（单 token）
+  return { ok: true, type: 'pkg', pkg: tokens[0] };
 }
 
 // ------------------------------------------------------------
@@ -338,35 +355,154 @@ async function installPlugin(options) {
 // ------------------------------------------------------------
 //  卸载
 // ------------------------------------------------------------
-// 移除 bundles 注册 + npm uninstall + 清理 1.0.x 手动接线遗留的
-// cordis.patch.yml 里的 usage-plugin 行（升级路径兼容）。
+// 移除 bundles 注册 + 清理 package.json / package-lock.json / node_modules /
+// cordis.patch.yml 中的插件痕迹（含 1.0.x 手动接线遗留的 usage-plugin 行）。
+//
+// 性能 / 健壮性说明（历史踩坑）：
+//  - profile 的 node_modules 可能是 pnpm 布局（nodeLinker: hoisted，带 .pnpm
+//    虚拟目录），npm uninstall 对这类目录清理不可靠，常出现实体目录残留，
+//    导致「卸载了但列表里还有 / 反复卸载不干净」。
+//  - npm uninstall 在没有 registry / manifest 与 lockfile 不同步时会重建整个
+//    依赖树并访问默认 registry，表现为"卡住很久才完成"。而这里把该包从
+//    manifest 与 lockfile 中剥离、再直接删除实体目录，全程纯本地操作，秒级完成，
+//    因此不依赖 npm 子进程，只在目录删除失败（如被占用）时以 --offline 快速兜底。
 async function uninstallPlugin(options) {
   const name = options.pkg || PLUGIN_PKG;
   const dir = profileDir(options.profile);
   const manifest = readManifest(dir);
   if (!manifest) return { ok: false, error: 'profile 不存在，无需卸载' };
 
+  // 1) 移除 bundles 注册
   const bundles = (manifest.dsh && manifest.dsh.profile && manifest.dsh.profile.bundles) || [];
   if (bundles.includes(name)) {
     bundles.splice(bundles.indexOf(name), 1);
     writeJson(manifestPath(dir), manifest);
   }
 
-  const env = {
-    ...(options.env || process.env),
-    npm_config_ignore_scripts: 'true',
-  };
-  const r = await runCommand(
-    options.nodeExe,
-    [options.npmCli, 'uninstall', name, '--no-audit', '--no-fund'],
-    { cwd: dir, env },
-    options.onOut
-  );
-  const legacyRowRemoved = removeLegacyPatchRow(patchPath(dir), name);
-  if (r.code !== 0) {
-    return { ok: false, error: r.error || 'npm uninstall 失败', legacyRowRemoved };
+  // 2) 移除 manifest dependencies 中的声明（若存在）
+  if (manifest.dependencies && manifest.dependencies[name]) {
+    delete manifest.dependencies[name];
+    writeJson(manifestPath(dir), manifest);
   }
-  return { ok: true, pkg: name, legacyRowRemoved };
+
+  // 3) 剥离 package-lock.json 中该包的引用（避免与 manifest 不同步引发 npm 卡顿）
+  const lockCleaned = scrubLockfile(dir, name);
+
+  // 4) 清理 cordis.patch.yml 中手动接线遗留的插件行
+  const legacyRowRemoved = removeLegacyPatchRow(patchPath(dir), name);
+
+  // 5) 直接删除实体目录（顶层 node_modules/<pkg> 与 .pnpm 虚拟目录）
+  const removedDirs = removeResidualNodeModules(dir, name);
+
+  // 6) 兜底：目录可能被进程占用删除失败，用 npm uninstall --offline
+  //    （离线模式不走网络，仅本地清理）再尝试一次。
+  const stillThere = fs.existsSync(path.join(dir, 'node_modules', ...String(name).split('/')));
+  let npmFallback = null;
+  if (stillThere && options.nodeExe && options.npmCli) {
+    const env = {
+      ...(options.env || process.env),
+      npm_config_ignore_scripts: 'true',
+    };
+    const args = ['uninstall', name, '--no-audit', '--no-fund', '--offline', '--prefer-offline'];
+    if (options.registry) args.push('--registry', options.registry);
+    npmFallback = await runCommand(
+      options.nodeExe,
+      [options.npmCli, ...args],
+      { cwd: dir, env },
+      options.onOut
+    );
+    const again = removeResidualNodeModules(dir, name);
+    removedDirs.push(...again);
+  }
+
+  const finalStillThere = fs.existsSync(path.join(dir, 'node_modules', ...String(name).split('/')));
+  return {
+    ok: !finalStillThere,
+    pkg: name,
+    legacyRowRemoved,
+    lockCleaned,
+    removedDirs,
+    npmFallbackUsed: !!npmFallback,
+  };
+}
+
+// 从 package-lock.json 中移除对指定包名的引用（顶层 deps + packages 记录）。
+// 当 profile 的 manifest 与 lockfile 不同步（历史卸载残留 / 手动改过 package.json）
+// 时，npm uninstall 会被不一致状态卡住，这里提前剥离该包引用让其恢复正常。
+function scrubLockfile(dir, pkgName) {
+  const lockPath = path.join(dir, 'package-lock.json');
+  if (!fs.existsSync(lockPath)) return false;
+  let lock;
+  try {
+    lock = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
+  } catch (e) {
+    return false;
+  }
+  let changed = false;
+  if (lock.packages && typeof lock.packages === 'object') {
+    // 顶层 "" 的 dependencies/devDependencies 里剥离该包
+    const root = lock.packages[''];
+    if (root && typeof root === 'object') {
+      for (const key of ['dependencies', 'devDependencies']) {
+        if (root[key] && root[key][pkgName]) {
+          delete root[key][pkgName];
+          changed = true;
+        }
+      }
+    }
+    // 移除该包自身的记录（含 scoped 路径 node_modules/@scope/pkg）
+    const rel = 'node_modules/' + String(pkgName);
+    const keys = Object.keys(lock.packages).filter((k) => k === rel || k === '.' + rel);
+    for (const k of keys) {
+      delete lock.packages[k];
+      changed = true;
+    }
+  }
+  if (changed) {
+    try {
+      fs.writeFileSync(lockPath, JSON.stringify(lock, null, 2) + '\n', 'utf8');
+    } catch (e) {
+      return false;
+    }
+  }
+  return changed;
+}
+
+// 手动删除 profile 中残留的插件实体目录（npm 对 pnpm hoisted 布局清理不彻底）。
+// 覆盖：node_modules/<pkg>（含 scoped）与 node_modules/.pnpm/<pkg>@<version>。
+// 返回删除成功的目录列表；目录不存在则跳过，不报错。
+function removeResidualNodeModules(dir, pkgName) {
+  const removed = [];
+  const nm = path.join(dir, 'node_modules');
+
+  // 1) 顶层包目录：node_modules/<pkg> 或 node_modules/@scope/<name>
+  const top = path.join(nm, ...String(pkgName).split('/'));
+  if (fs.existsSync(top)) {
+    try {
+      fs.rmSync(top, { recursive: true, force: true });
+      removed.push(top);
+    } catch (e) { /* 忽略权限/占用错误 */ }
+  }
+
+  // 2) pnpm 虚拟目录：node_modules/.pnpm/<pkg>@<version> 与 <pkg>@<version>_...
+  const pnpmDir = path.join(nm, '.pnpm');
+  if (fs.existsSync(pnpmDir)) {
+    const base = String(pkgName).replace('/', '+'); // scoped 包在 .pnpm 中形如 @scope+name
+    try {
+      const entries = fs.readdirSync(pnpmDir);
+      for (const e of entries) {
+        if (e.startsWith(base + '@')) {
+          const full = path.join(pnpmDir, e);
+          try {
+            fs.rmSync(full, { recursive: true, force: true });
+            removed.push(full);
+          } catch (err) { /* 忽略 */ }
+        }
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  return removed;
 }
 
 // 从 cordis.patch.yml 中移除含指定插件 name 的顶层 "- insert:" 块

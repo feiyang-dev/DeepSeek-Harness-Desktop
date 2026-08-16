@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, dialog, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, nativeTheme, shell, dialog, Notification } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const http = require('node:http');
 const https = require('node:https');
@@ -11,6 +11,7 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const pluginMgr = require('./plugin-manager.js');
 const pluginMarket = require('./plugin-market.js');
+const dshSettings = require('./dsh-settings.js');
 
 // ============================================================
 //  全局状态
@@ -1617,7 +1618,7 @@ async function restartService() {
 // ============================================================
 function createBootWindow() {
   // 窗口背景色跟随主题，避免切换/加载时闪白
-  const theme = loadAppConfig().theme === 'light' ? 'light' : 'dark';
+  const resolved = resolveEffectiveTheme();
   bootWindow = new BrowserWindow({
     width: 960,
     height: 660,
@@ -1627,15 +1628,20 @@ function createBootWindow() {
     autoHideMenuBar: true,
     title: APP_NAME,
     icon: appIcon(256),
-    backgroundColor: theme === 'light' ? '#f5f5f5' : '#111111',
+    backgroundColor: resolved === 'light' ? '#f5f5f5' : '#111111',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      additionalArguments: [`--dsh-theme=${theme}`],
+      additionalArguments: [`--dsh-theme=${resolved}`],
     },
   });
   bootWindow.loadFile(path.join(__dirname, 'boot', 'boot.html'));
+  // 外部链接（如更新日志中的链接）用系统默认浏览器打开，禁止在应用内新开窗口
+  bootWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http')) shell.openExternal(url);
+    return { action: 'deny' };
+  });
   // 关闭引导窗口 = 退出 App
   bootWindow.on('close', (e) => {
     if (!quitting) {
@@ -1647,6 +1653,8 @@ function createBootWindow() {
 }
 
 function createMainWindow() {
+  // 窗口背景色跟随主题（浅色时避免加载期闪黑）
+  const resolved = resolveEffectiveTheme();
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -1656,7 +1664,7 @@ function createMainWindow() {
     autoHideMenuBar: true,
     title: APP_NAME,
     icon: appIcon(256),
-    backgroundColor: '#0d1117',
+    backgroundColor: resolved === 'light' ? '#ffffff' : '#0d1117',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -1664,6 +1672,10 @@ function createMainWindow() {
   });
   mainWindow.webContents.on('did-fail-load', (e, code, desc, url) => {
     logLine(`[诊断] 主界面加载失败 (${code}) ${desc} ${url}`);
+  });
+  // 页面加载完成后注入官方主题协议（colorScheme + data-ds-dark-theme）
+  mainWindow.webContents.on('did-finish-load', () => {
+    applyThemeToMainWindow();
   });
   mainWindow.loadURL(`http://${host}:${port}`);
   mainWindow.once('ready-to-show', () => mainWindow.show());
@@ -1771,6 +1783,16 @@ app.whenReady().then(() => {
   // 读取持久化的开发者选项模式开关
   developerMode = loadAppConfig().developerMode === true;
   if (developerMode) logLine('[设置] 开发者选项模式已开启（可从设置页关闭）');
+  // 主题：应用原生层（标题栏/系统弹窗跟随）+ 监听官方 settings.yaml 反向同步
+  applyNativeTheme();
+  watchDshSettings();
+  // system 档：系统深浅色实时变化时，同步到各窗口（不重启，立即跟随）
+  nativeTheme.on('updated', () => {
+    if (loadAppConfig().theme === 'system') {
+      applyThemeToMainWindow();
+      broadcastTheme();
+    }
+  });
   createBootWindow();
   createTray();
 
@@ -1885,9 +1907,9 @@ function loadAppConfig() {
     appConfig.developerMode = false;
     saveAppConfig();
   }
-  // 界面主题：'dark' | 'light'（默认深色）
-  if (!['dark', 'light'].includes(appConfig.theme)) {
-    appConfig.theme = 'dark';
+  // 界面主题：'dark' | 'light' | 'system'（默认 system，跟随系统）
+  if (!['dark', 'light', 'system'].includes(appConfig.theme)) {
+    appConfig.theme = 'system';
     saveAppConfig();
   }
   return appConfig;
@@ -1902,6 +1924,117 @@ function saveAppConfig() {
 
 function getDeviceId() {
   return loadAppConfig().deviceId;
+}
+
+// ============================================================
+//  界面主题（三档：dark / light / system）
+// ============================================================
+//  themeSource 是用户偏好档位（'dark' | 'light' | 'system'）；
+//  resolvedTheme 是实际生效的明暗（'dark' | 'light'），system 时由系统解析。
+
+// 解析用户偏好的实际明暗（system -> 系统当前深浅色）
+function resolveEffectiveTheme() {
+  const pref = loadAppConfig().theme;
+  if (pref === 'light') return 'light';
+  if (pref === 'dark') return 'dark';
+  return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+}
+
+// 把主题应用到 Electron 原生层（标题栏 / 系统弹窗 / 右键菜单跟随）
+function applyNativeTheme() {
+  const pref = loadAppConfig().theme;
+  nativeTheme.themeSource = pref === 'system' ? 'system' : pref;
+}
+
+// 把当前主题广播给 boot 窗口（控制面板刷新主题显示 / 背景色）
+function broadcastTheme() {
+  const pref = loadAppConfig().theme;
+  const resolved = resolveEffectiveTheme();
+  broadcast('theme:changed', {
+    theme: pref,           // 用户档位：dark | light | system
+    resolved,              // 实际明暗：dark | light
+  });
+  if (bootWindow && !bootWindow.isDestroyed()) {
+    bootWindow.setBackgroundColor(resolved === 'light' ? '#f5f5f5' : '#111111');
+  }
+}
+
+// 向官方 WebUI 主窗口注入官方主题协议（不改官方代码）：
+// 官方 boot-theme 脚本做的事 —— 设置 colorScheme + body[data-ds-dark-theme]。
+// 这里用 executeJavaScript 在运行时直接应用，避免改动官方任何文件。
+const OFFICIAL_THEME_INJECT = (dark) => `(() => {
+  const dark = ${!!dark};
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+  document.body.toggleAttribute('data-ds-dark-theme', dark);
+  document.documentElement.style.backgroundColor = dark ? '#0d1117' : '#ffffff';
+  return dark;
+})()`;
+
+// 把当前主题实时应用到官方 WebUI 主窗口（若已加载完成）
+function applyThemeToMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed() || !serviceState.running) return;
+  const resolved = resolveEffectiveTheme();
+  try {
+    mainWindow.webContents.executeJavaScript(OFFICIAL_THEME_INJECT(resolved === 'dark')).catch(() => {});
+    // 窗口背景色同步（浅色时不闪黑）
+    mainWindow.setBackgroundColor(resolved === 'light' ? '#ffffff' : '#0d1117');
+  } catch (e) { /* 窗口可能尚未 ready */ }
+}
+
+// 主题统一入口：设置偏好 -> 持久化 app-config -> 同步官方 settings.yaml
+// -> 应用原生层 -> 应用官方 WebUI -> 广播到控制面板
+function setThemePreference(theme) {
+  const t = ['dark', 'light', 'system'].includes(theme) ? theme : 'system';
+  const cfg = loadAppConfig();
+  cfg.theme = t;
+  saveAppConfig();
+
+  // 同步官方 WebUI 主题偏好（~/.dsh/settings.yaml 的 ui-theme.preference）
+  const sync = dshSettings.writeThemePreference(t);
+
+  // 应用各处
+  applyNativeTheme();
+  applyThemeToMainWindow();
+  broadcastTheme();
+  logLine(`[主题] 已切换为${t === 'dark' ? '深色' : t === 'light' ? '浅色' : '跟随系统'}（官方同步：${sync.changed ? '已写入' : '已一致'}）`);
+  return { ok: true, theme: t, resolved: resolveEffectiveTheme() };
+}
+
+// 反向同步：监听官方 settings.yaml（~/.dsh/settings.yaml）的 ui-theme.preference。
+// 官方 WebUI 自己的设置页切换主题时写入该文件，这里感知变化并同步到控制面板。
+let settingsWatcher = null;
+let settingsWatchTimer = null;
+function watchDshSettings() {
+  const file = dshSettings.settingsYamlPath();
+  const onChange = () => {
+    // fs.watch 可能重复触发，合并为一次延迟处理
+    clearTimeout(settingsWatchTimer);
+    settingsWatchTimer = setTimeout(() => {
+      try {
+        const official = dshSettings.readThemePreference();
+        if (!official) return;
+        const cfg = loadAppConfig();
+        if (cfg.theme !== official) {
+          cfg.theme = official;
+          saveAppConfig();
+          applyNativeTheme();
+          applyThemeToMainWindow();
+          broadcastTheme();
+          logLine(`[主题] 官方 WebUI 中主题已切换为${official === 'dark' ? '深色' : official === 'light' ? '浅色' : '跟随系统'}，控制面板已同步`);
+        }
+      } catch (e) { /* ignore */ }
+    }, 300);
+  };
+  try {
+    // 目录级 watch 更稳（文件可能被原子替换/重建）
+    const dir = path.dirname(file);
+    if (!fs.existsSync(dir)) return;
+    settingsWatcher = fs.watch(dir, (evt, name) => {
+      if (name === 'settings.yaml' || name === 'settings.yml') onChange();
+    });
+  } catch (e) {
+    settingsWatcher = null;
+  }
 }
 
 // ---------- 更新状态 ----------
@@ -1944,25 +2077,43 @@ function notify(title, body) {
 }
 
 // ---------- HTTP 请求 ----------
+// TLS 证书校验失败（unable to verify the first certificate / UNABLE_TO_VERIFY_LEAF_SIGNATURE）
+// 常见于国内网络环境（代理 / 运营商劫持 / 系统根证书不全）。自动降级为不校验证书重试一次，
+// 保证版本解析 / 更新检查等关键请求可用（仅对异常请求降级，不影响其他请求）。
 function httpJsonRequest(url, timeoutMs = 15000) {
+  return httpJsonRequestInner(url, timeoutMs, false);
+}
+
+function httpJsonRequestInner(url, timeoutMs, insecure) {
   return new Promise((resolve, reject) => {
-    const req = https.get(url, { headers: { 'User-Agent': `dsh-desktop/${appVersion()}` }, timeout: timeoutMs }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        req.destroy();
-        return resolve(httpJsonRequest(res.headers.location, timeoutMs));
-      }
-      let body = '';
-      res.on('data', (c) => { body += c; });
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(body));
-        } catch (e) {
-          reject(new Error('服务器返回格式错误'));
+    const req = https.get(
+      url,
+      { headers: { 'User-Agent': `dsh-desktop/${appVersion()}` }, timeout: timeoutMs, rejectUnauthorized: !insecure },
+      (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          req.destroy();
+          return resolve(httpJsonRequestInner(res.headers.location, timeoutMs, insecure));
         }
-      });
-    });
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(body));
+          } catch (e) {
+            reject(new Error('服务器返回格式错误'));
+          }
+        });
+      }
+    );
     req.on('timeout', () => { req.destroy(); reject(new Error('网络请求超时')); });
-    req.on('error', (e) => reject(new Error('网络错误：' + e.message)));
+    req.on('error', (e) => {
+      // 证书校验失败：降级重试一次（跳过证书校验）
+      if (!insecure && /certificate|CERT_|UNABLE_TO_VERIFY|SELF_SIGNED|SSL/i.test(e.message)) {
+        logLine('[网络] 检测到证书校验失败，自动降级重试（跳过证书校验）：' + url);
+        return resolve(httpJsonRequestInner(url, timeoutMs, true));
+      }
+      reject(new Error('网络错误：' + e.message));
+    });
   });
 }
 
@@ -2207,7 +2358,8 @@ ipcMain.handle('settings:get', async () => {
     notifications: cfg.notifications !== false,
     developerMode: cfg.developerMode === true,
     dshVersion: serviceState.dshVersion,
-    theme: cfg.theme === 'light' ? 'light' : 'dark',
+    theme: cfg.theme,
+    themeResolved: resolveEffectiveTheme(),
     deviceId: cfg.deviceId,
     updateApiBase: UPDATE_API_BASE,
     appId: UPDATE_APP_ID,
@@ -2216,13 +2368,9 @@ ipcMain.handle('settings:get', async () => {
   };
 });
 
-// 界面主题切换（深色 / 浅色），持久化保存
+// 界面主题切换（dark / light / system），持久化 + 同步官方 WebUI + 原生层联动
 ipcMain.handle('settings:set-theme', (e, theme) => {
-  const cfg = loadAppConfig();
-  cfg.theme = theme === 'light' ? 'light' : 'dark';
-  saveAppConfig();
-  logLine(`[设置] 界面主题已切换为${cfg.theme === 'light' ? '浅色' : '深色'}`);
-  return { ok: true, theme: cfg.theme };
+  return setThemePreference(theme);
 });
 
 ipcMain.handle('settings:set-notifications', (e, enabled) => {
@@ -2290,9 +2438,23 @@ ipcMain.handle('update:install', async () => {
 //  插件管理 IPC（推荐插件一键安装 + 自定义包名安装）
 //  安装逻辑等价于 `dsh plugin --profile web add <pkg>`，但无需 pnpm：
 //  npm install 进 profile 目录 + 自动注册 dsh.profile.bundles。
+//  同时支持用户直接粘贴任意命令（npx / npm / node / pnpm 等）原样执行。
 // ============================================================
 
-// 查询推荐插件列表安装状态
+// 主进程插件操作状态表：key 为插件包名（命令操作用 'cmd:<命令>'）。
+// 渲染进程刷新/切换页面后通过 plugin:status / plugin:list 查询到进行中的
+// 操作并恢复按钮状态，避免"正在安装却显示未安装"的状态丢失问题。
+const pluginOps = new Map();
+function setPluginOp(key, op) {
+  if (op) pluginOps.set(key, op);
+  else pluginOps.delete(key);
+}
+function currentPluginOp(pkg) {
+  const op = pluginOps.get(pkg);
+  return op ? op.type : null;
+}
+
+// 查询推荐插件列表安装状态（叠加进行中的操作状态 opType + 全局忙碌标记）
 ipcMain.handle('plugin:status', async () => {
   try {
     const dir = pluginMgr.profileDir();
@@ -2301,17 +2463,21 @@ ipcMain.handle('plugin:status', async () => {
       title: p.title,
       desc: p.desc,
       ...pluginMgr.pluginStatus(dir, p.pkg),
+      opType: currentPluginOp(p.pkg),
     }));
-    return { ok: true, list };
+    return { ok: true, list, busy: pluginOps.size > 0 };
   } catch (e) {
     return { ok: false, error: e.message };
   }
 });
 
-// 列出 profile 中所有已安装插件
+// 列出 profile 中所有已安装插件（叠加进行中的操作状态 opType）
 ipcMain.handle('plugin:list', async () => {
   try {
-    const list = pluginMgr.listInstalledPlugins(pluginMgr.profileDir());
+    const list = pluginMgr.listInstalledPlugins(pluginMgr.profileDir()).map((p) => ({
+      ...p,
+      opType: currentPluginOp(p.pkg),
+    }));
     return { ok: true, list };
   } catch (e) {
     return { ok: false, error: e.message };
@@ -2340,17 +2506,43 @@ function setCurrentRegistry(url) {
   if (i >= 0) registryIndex = i;
 }
 
-// 统一安装入口：pkg 缺省为推荐插件
-async function doInstallPlugin(pkg) {
+// 统一安装入口：支持包名（字符串）或解析后的安装内容（{ ok, type, pkg?|command?, tokens? }）。
+// pkg 缺省为推荐插件。
+async function doInstallPlugin(input) {
   const nodeExe = await findNodeExe();
   const npmCli = await findNpmCli();
-  const name = pkg || pluginMgr.PLUGIN_PKG;
   if (!nodeExe || !npmCli) {
     const msg = '未检测到 Node.js / npm，请先安装 Node.js（https://nodejs.org/）';
     broadcast('plugin:event', { stage: 'error', message: msg });
     return { ok: false, error: msg };
   }
+  // 解析安装内容：对象（已解析）或字符串（原始输入）
+  let parsed = input && typeof input === 'object' ? input : null;
+  if (typeof input === 'string') {
+    if (!String(input).trim()) {
+      const msg = '请输入要安装的插件包名或安装命令';
+      broadcast('plugin:event', { stage: 'error', message: msg });
+      return { ok: false, error: msg };
+    }
+    parsed = pluginMgr.validatePkgSpec(input);
+  }
+  // null / undefined（推荐插件 / 市场安装按钮）→ 默认推荐插件
+  if (!parsed) parsed = pluginMgr.validatePkgSpec(pluginMgr.PLUGIN_PKG);
+  if (!parsed || !parsed.ok) {
+    const msg = (parsed && parsed.error) || '无效的安装内容';
+    broadcast('plugin:event', { stage: 'error', message: msg });
+    return { ok: false, error: msg };
+  }
+  if (parsed.type === 'command') {
+    return await runInstallCommand(parsed, nodeExe, npmCli);
+  }
+  return await runInstallPkg(parsed.pkg, nodeExe, npmCli);
+}
+
+// 标准安装流程：依次尝试镜像池，失败自动换下一个镜像
+async function runInstallPkg(name, nodeExe, npmCli) {
   await ensureRegistrySelected();
+  setPluginOp(name, { type: 'install', startedAt: Date.now() });
   try {
     let r = null;
     // 依次尝试镜像池：当前镜像失败（404 缺包 / 网络异常等）自动换下一个
@@ -2398,9 +2590,83 @@ async function doInstallPlugin(pkg) {
     }
     return r;
   } catch (e) {
-    broadcast('plugin:event', { stage: 'error', message: '安装异常：' + e.message });
+    broadcast('plugin:event', { stage: 'error', pkg: name, message: '安装异常：' + e.message });
     return { ok: false, error: e.message };
+  } finally {
+    setPluginOp(name, null);
   }
+}
+
+// 命令模式：原样执行用户输入的命令（npx / npm / node / pnpm / 其他可执行文件）。
+// 用 spawn 数组参数（不经 shell），输出完整转发到渲染进程终端日志面板。
+async function runInstallCommand(parsed, nodeExe, npmCli) {
+  const tokens = parsed.tokens || [];
+  const first = String(tokens[0] || '').toLowerCase();
+  const displayCmd = tokens.join(' ');
+  const opKey = 'cmd:' + displayCmd;
+
+  let exe = null;
+  let args = [];
+  if (first === 'npm') {
+    if (!npmCli) return failInstall(opKey, '未检测到 npm');
+    exe = nodeExe; args = [npmCli, ...tokens.slice(1)];
+  } else if (first === 'npx') {
+    if (!npmCli) return failInstall(opKey, '未检测到 npm / npx');
+    const npxCli = path.join(path.dirname(npmCli), 'npx-cli.js');
+    if (!fs.existsSync(npxCli)) return failInstall(opKey, '未找到 npx 入口（' + npxCli + '）');
+    exe = nodeExe; args = [npxCli, ...tokens.slice(1)];
+  } else if (first === 'node') {
+    exe = nodeExe; args = tokens.slice(1);
+  } else if (first === 'pnpm') {
+    const pnpmCli = await findPnpmCli();
+    if (!pnpmCli) return failInstall(opKey, '未找到 pnpm，请先安装 pnpm 后再试');
+    exe = nodeExe; args = [pnpmCli, ...tokens.slice(1)];
+  } else {
+    const found = await which(tokens[0]);
+    if (!found) return failInstall(opKey, `未找到命令 ${tokens[0]}，请确认其已安装并加入 PATH`);
+    exe = found; args = tokens.slice(1);
+  }
+
+  setPluginOp(opKey, { type: 'install', startedAt: Date.now() });
+  broadcast('plugin:event', { stage: 'command', command: displayCmd });
+  broadcast('plugin:event', { stage: 'installing', message: `正在执行：${displayCmd}` });
+  try {
+    const env = {
+      ...cleanServiceEnv(),
+      npm_config_ignore_scripts: 'true',
+      npm_config_registry: npmRegistry, // npx/npm 默认走已选镜像，避免国内直连官方源慢
+      npm_config_yes: 'true',           // 非交互环境：npx / npm exec 不弹 "Ok to proceed?" 确认
+      NPM_CONFIG_LOGLEVEL: 'info',
+      npm_config_progress: 'true',
+    };
+    const cwd = pluginMgr.profileDir();
+    pluginMgr.ensureProfile(cwd); // 确保 profile 目录存在（命令可能在此目录下执行）
+    const r = await runCommand(exe, args, { cwd, env }, (s) => {
+      const line = String(s).replace(/\r?\n$/, '');
+      logLine('[插件] ' + line);
+      broadcast('plugin:event', { stage: 'log', message: line });
+    });
+    if (r.code === 0) {
+      broadcast('plugin:event', { stage: 'done', message: `命令执行完成：${displayCmd}` });
+      notify('插件操作完成', displayCmd);
+    } else {
+      broadcast('plugin:event', {
+        stage: 'error',
+        message: `命令执行失败（退出码 ${r.code}）：${displayCmd}${(r.error ? ' · ' + r.error : '')}`,
+      });
+    }
+    return { ok: r.code === 0, out: r.out, command: displayCmd };
+  } catch (e) {
+    broadcast('plugin:event', { stage: 'error', message: '命令执行异常：' + e.message });
+    return { ok: false, error: e.message };
+  } finally {
+    setPluginOp(opKey, null);
+  }
+}
+
+function failInstall(_opKey, message) {
+  broadcast('plugin:event', { stage: 'error', message });
+  return { ok: false, error: message };
 }
 
 // 一键安装推荐插件（pkg 缺省为 @feiyang666/deepseekharnessdesktop）
@@ -2409,15 +2675,11 @@ ipcMain.handle('plugin:install', async (e, payload) => {
   return await doInstallPlugin(pkg || null);
 });
 
-// 自定义包名 / 安装命令安装（支持 "npm install xxx" 形式）
+// 自定义包名 / 安装命令安装：支持任意格式，不做限制
+// （纯包名 / npm install xxx / npx @deepseek-ai/dsh plugin --profile web add xxx / node / pnpm ...）
 ipcMain.handle('plugin:install-custom', async (e, payload) => {
   const input = payload && typeof payload === 'object' ? payload.pkg : payload;
-  const v = pluginMgr.validatePkgSpec(input);
-  if (!v.ok) {
-    broadcast('plugin:event', { stage: 'error', message: v.error });
-    return { ok: false, error: v.error };
-  }
-  return await doInstallPlugin(v.pkg);
+  return await doInstallPlugin(input || '');
 });
 
 // 统一卸载入口：pkg 缺省为推荐插件
@@ -2430,6 +2692,7 @@ async function doUninstallPlugin(pkg) {
     broadcast('plugin:event', { stage: 'error', message: msg });
     return { ok: false, error: msg };
   }
+  setPluginOp(name, { type: 'uninstall', startedAt: Date.now() });
   broadcast('plugin:event', { stage: 'uninstalling', pkg: name, message: `正在卸载 ${name} ...` });
   try {
     const r = await pluginMgr.uninstallPlugin({
@@ -2447,12 +2710,16 @@ async function doUninstallPlugin(pkg) {
     broadcast('plugin:event', {
       stage: r.ok ? 'done' : 'error',
       pkg: name,
-      message: r.ok ? '卸载完成' : `卸载失败：${r.error || '未知错误'}`,
+      message: r.ok
+        ? '卸载完成'
+        : `卸载失败：插件目录可能被占用或无法删除（${(r.error || '未知错误').slice(0, 120)}）`,
     });
     return r;
   } catch (e) {
-    broadcast('plugin:event', { stage: 'error', message: '卸载异常：' + e.message });
+    broadcast('plugin:event', { stage: 'error', pkg: name, message: '卸载异常：' + e.message });
     return { ok: false, error: e.message };
+  } finally {
+    setPluginOp(name, null);
   }
 }
 
@@ -2486,7 +2753,7 @@ ipcMain.handle('plugin:market-list', async (e, payload) => {
       resolvePkgNames: payload.resolvePkgNames !== false,
     });
     if (!result.ok) return result;
-    // 叠加已安装状态
+    // 叠加已安装状态 + 进行中的操作状态
     const installedMap = await marketInstalledMap();
     result.list = result.list.map((item) => {
       if (item.pkgName && installedMap[item.pkgName]) {
@@ -2496,9 +2763,16 @@ ipcMain.handle('plugin:market-list', async (e, payload) => {
           installed: ins.installed,
           installedVersion: ins.version,
           bundled: !!ins.bundled,
+          opType: currentPluginOp(item.pkgName),
         };
       }
-      return { ...item, installed: false, installedVersion: '', bundled: false };
+      return {
+        ...item,
+        installed: false,
+        installedVersion: '',
+        bundled: false,
+        opType: item.pkgName ? currentPluginOp(item.pkgName) : null,
+      };
     });
     return result;
   } catch (e) {

@@ -179,15 +179,15 @@
             <div class="panel-title">自定义安装</div>
             <div class="custom-install-row">
               <input class="custom-input" id="customPkgInput" type="text"
-                     placeholder="npm 包名，如 @scope/plugin-name" spellcheck="false" />
+                     placeholder="包名或完整命令，如 @scope/plugin-name / npx @deepseek-ai/dsh plugin --profile web add ..." spellcheck="false" />
               <button class="btn btn-primary" id="customInstallBtn">安装</button>
             </div>
-            <p class="custom-install-hint">支持填写包名，也支持「npm install 包名」形式。安装完成后点击「立即重启」即可生效。</p>
+            <p class="custom-install-hint">不限制格式：支持纯包名、「npm install 包名」、<code>npx @deepseek-ai/dsh plugin --profile web add 包名</code>、node / pnpm 等任意命令，原样执行。安装完成后点击「立即重启」即可生效。</p>
             <div class="plugin-note" id="customNote" hidden></div>
             <div class="custom-log" id="customLogPanel" hidden>
               <div class="custom-log-header" id="customLogHeader">
                 <span class="log-toggle" id="customLogToggle">▶</span>
-                <span>命令行日志</span>
+                <span>终端日志</span>
                 <span class="log-badge" id="customLogBadge">0</span>
               </div>
               <div class="custom-log-body" id="customLogBody" hidden>
@@ -283,7 +283,7 @@
             <div class="settings-row">
               <div class="settings-row-text">
                 <div>界面主题</div>
-                <div class="settings-desc">切换深色 / 浅色界面，选择后立即生效并保存</div>
+                <div class="settings-desc">切换深色 / 浅色 / 跟随系统主题，选择后立即生效并保存；与官方 WebUI 多端同步，任意一端切换，另一端自动跟随</div>
               </div>
               <div class="theme-toggle" id="themeToggle">
                 <button class="btn" data-theme="dark" id="themeDarkBtn" title="深色">
@@ -297,6 +297,12 @@
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
                   </span>
                   浅色
+                </button>
+                <button class="btn" data-theme="system" id="themeSystemBtn" title="跟随系统">
+                  <span class="theme-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                  </span>
+                  跟随系统
                 </button>
               </div>
             </div>

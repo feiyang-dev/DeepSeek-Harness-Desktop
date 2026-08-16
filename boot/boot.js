@@ -107,6 +107,7 @@ const setUpdateBase = document.getElementById('setUpdateBase');
 const setNotifyToggle = document.getElementById('setNotifyToggle');
 const themeDarkBtn = document.getElementById('themeDarkBtn');
 const themeLightBtn = document.getElementById('themeLightBtn');
+const themeSystemBtn = document.getElementById('themeSystemBtn');
 const setDevModeToggle = document.getElementById('setDevModeToggle');
 const setDshVersion = document.getElementById('setDshVersion');
 const setDshCheckBtn = document.getElementById('setDshCheckBtn');
@@ -329,14 +330,30 @@ btnRestartService.addEventListener('click', () => {
 });
 
 // ============ 插件管理页 ============
-function openPluginPage() {
-  showScreen('plugin');
-  resetCustomLog();
-  loadPluginStatus();
-  loadInstalledList();
+// 进行中的插件操作表：key = 插件包名，value = 'install' | 'uninstall'。
+// 与主进程 pluginOps 联动：事件驱动即时更新，状态查询兜底恢复（刷新/切换页面不丢失）。
+const localBusy = new Map();
+function opFor(p) {
+  const key = p && (p.pkg || p.pkgName);
+  if (key && localBusy.has(key)) return localBusy.get(key);
+  return (p && p.opType) || null;
 }
 
-// 打开插件管理页时重置命令行日志面板与提示
+// 刷新插件相关列表（推荐插件 + 已安装插件；在市场页时也刷新市场列表）
+function refreshPluginLists() {
+  loadPluginStatus();
+  loadInstalledList();
+  if (marketScreen && !marketScreen.hidden && marketPage && !marketBusy) loadMarket();
+}
+
+// 打开插件管理页：保留已有终端日志（便于查看上次操作输出），并刷新状态
+function openPluginPage() {
+  showScreen('plugin');
+  if (customLogCount === 0) resetCustomLog();
+  refreshPluginLists();
+}
+
+// 初始化命令行日志面板与提示（仅在无内容时调用，切换页面不清空）
 function resetCustomLog() {
   customLogCount = 0;
   customLogBadge.textContent = '0';
@@ -348,16 +365,23 @@ function resetCustomLog() {
   showCustomNote('', '');
 }
 
+// 有插件操作输出时确保日志面板展开可见（模拟终端体验）
+function ensureCustomLogOpen() {
+  customLogPanel.hidden = false;
+  if (!customLogOpen) {
+    customLogOpen = true;
+    customLogBody.hidden = false;
+    customLogPanel.classList.add('open');
+  }
+}
+
+// 全局忙碌状态：仅控制「自定义安装」输入区与刷新按钮。
+// 推荐/已安装/市场列表中的按钮状态按单个插件的进行中操作 opType 独立渲染，
+// 互不影响 —— 安装 A 时 B 的按钮不会再显示"卸载中"。
 function setPluginBusy(busy) {
   pluginBusy = busy;
   pluginDefRefreshBtn.disabled = busy;
   customInstallBtn.disabled = busy;
-  // 推荐插件列表中的按钮
-  recPluginList.querySelectorAll('.plugin-rec-actions .settings-btn').forEach((b) => {
-    b.disabled = busy;
-    if (b.dataset.action === 'install') b.textContent = busy ? '安装中...' : '一键安装';
-    else if (b.dataset.action === 'uninstall') b.textContent = busy ? '卸载中...' : '卸载';
-  });
 }
 
 function showCustomNote(text, kind) {
@@ -385,7 +409,8 @@ function appendCustomLog(text) {
   customLogBadge.textContent = String(customLogCount);
   const div = document.createElement('div');
   div.className = 'log-line';
-  if (/错误|失败|Error|error/.test(text)) div.classList.add('err');
+  if (/^\$ /.test(text)) div.classList.add('cmd'); // 执行的命令原样高亮
+  else if (/错误|失败|Error|error/.test(text)) div.classList.add('err');
   div.textContent = text;
   customLogBody.appendChild(div);
   customLogBody.scrollTop = customLogBody.scrollHeight;
@@ -417,10 +442,15 @@ function buildRecItem(p) {
   const desc = document.createElement('div');
   desc.className = 'plugin-rec-desc';
   desc.textContent = (p.desc ? p.desc + ' · ' : '') + p.pkg;
+  const op = opFor(p);
   const status = document.createElement('div');
   status.className = 'plugin-status';
   const parts = [];
-  if (p.installed) {
+  if (op === 'install') {
+    parts.push('正在安装中...');
+  } else if (op === 'uninstall') {
+    parts.push('正在卸载中...');
+  } else if (p.installed) {
     parts.push('已安装' + (p.version ? ' v' + p.version : ''));
     parts.push(p.bundled ? '已注册（重启服务后自动加载）' : '未注册 bundles');
   } else {
@@ -436,17 +466,17 @@ function buildRecItem(p) {
   const installBtn = document.createElement('button');
   installBtn.className = 'settings-btn primary';
   installBtn.dataset.action = 'install';
-  installBtn.textContent = '一键安装';
-  installBtn.hidden = !!p.installed;
-  installBtn.disabled = pluginBusy;
+  installBtn.textContent = op === 'install' ? '安装中...' : '一键安装';
+  installBtn.hidden = (!!p.installed && op !== 'install') || op === 'uninstall';
+  installBtn.disabled = !!op || pluginBusy;
   installBtn.addEventListener('click', () => doPluginInstall(p.pkg));
   const uninstallBtn = document.createElement('button');
   uninstallBtn.className = 'settings-btn';
   uninstallBtn.dataset.action = 'uninstall';
-  uninstallBtn.textContent = '卸载';
-  uninstallBtn.hidden = !p.installed;
-  uninstallBtn.disabled = pluginBusy;
-  uninstallBtn.addEventListener('click', () => uninstallPkg(p.pkg, uninstallBtn));
+  uninstallBtn.textContent = op === 'uninstall' ? '卸载中...' : '卸载';
+  uninstallBtn.hidden = (!p.installed && op !== 'uninstall') || op === 'install';
+  uninstallBtn.disabled = !!op || pluginBusy;
+  uninstallBtn.addEventListener('click', () => uninstallPkg(p.pkg));
   actions.appendChild(installBtn);
   actions.appendChild(uninstallBtn);
 
@@ -460,6 +490,8 @@ function buildRecItem(p) {
 function loadPluginStatus() {
   if (!window.dsh || !window.dsh.getPluginStatus) return;
   window.dsh.getPluginStatus().then((st) => {
+    // 恢复全局忙碌状态（主进程有插件操作进行中时禁用自定义安装输入区，页面切换/刷新不丢失）
+    if (st && typeof st.busy === 'boolean' && st.busy !== pluginBusy) setPluginBusy(st.busy);
     recPluginList.innerHTML = '';
     // 兼容旧返回格式：单插件状态 { ok, installed, version, bundled }
     let list;
@@ -506,6 +538,7 @@ function loadInstalledList() {
       return;
     }
     for (const p of list) {
+      const op = opFor(p);
       const item = document.createElement('div');
       item.className = 'installed-item';
 
@@ -516,14 +549,18 @@ function loadInstalledList() {
       name.textContent = p.pkg;
       const meta = document.createElement('div');
       meta.className = 'installed-meta';
-      meta.textContent = 'v' + (p.version || '?');
+      if (op === 'uninstall') {
+        meta.textContent = '正在卸载中...';
+      } else {
+        meta.textContent = 'v' + (p.version || '?');
+      }
       if (['@feiyang666/deepseekharnessdesktop', '@feiyang666/deepseekharnessdesktop-vault'].includes(p.pkg)) {
         const rec = document.createElement('span');
         rec.className = 'installed-badge rec';
         rec.textContent = '推荐';
         meta.appendChild(rec);
       }
-      if (p.bundled) {
+      if (p.bundled && op !== 'uninstall') {
         const b = document.createElement('span');
         b.className = 'installed-badge';
         b.textContent = '已注册';
@@ -534,9 +571,9 @@ function loadInstalledList() {
 
       const btn = document.createElement('button');
       btn.className = 'settings-btn';
-      btn.textContent = '卸载';
-      btn.disabled = pluginBusy;
-      btn.addEventListener('click', () => uninstallPkg(p.pkg, btn));
+      btn.textContent = op === 'uninstall' ? '卸载中...' : '卸载';
+      btn.disabled = !!op || pluginBusy;
+      btn.addEventListener('click', () => uninstallPkg(p.pkg));
 
       item.appendChild(info);
       item.appendChild(btn);
@@ -549,12 +586,20 @@ function loadInstalledList() {
 
 // 安装推荐插件（pkg 缺省为 @feiyang666/deepseekharnessdesktop）
 function doPluginInstall(pkg) {
-  if (pluginBusy || !window.dsh || !window.dsh.installPlugin) return;
-  setPluginBusy(true);
-  window.dsh.installPlugin(pkg).then(() => setPluginBusy(false));
+  if (!window.dsh || !window.dsh.installPlugin) return;
+  if (opFor({ pkg })) return; // 该插件已在安装/卸载中，忽略重复点击
+  localBusy.set(pkg, 'install');
+  refreshPluginLists();
+  window.dsh.installPlugin(pkg).then(() => {
+    localBusy.delete(pkg);
+    refreshPluginLists();
+  }).catch(() => {
+    localBusy.delete(pkg);
+    refreshPluginLists();
+  });
 }
 
-// 自定义安装
+// 自定义安装（支持任意命令格式：纯包名 / npm install xxx / npx xxx / node / pnpm ...）
 function doCustomInstall() {
   if (pluginBusy || !window.dsh || !window.dsh.installCustomPlugin) return;
   const val = customPkgInput.value.trim();
@@ -564,6 +609,7 @@ function doCustomInstall() {
   }
   setPluginBusy(true);
   showCustomNote('正在安装，请稍候（首次需从镜像下载依赖）...', '');
+  ensureCustomLogOpen();
   window.dsh.installCustomPlugin(val).then((r) => {
     setPluginBusy(false);
     if (r && r.ok) {
@@ -574,28 +620,26 @@ function doCustomInstall() {
       // 主进程已通过 plugin:event 推送详细错误，这里补充提示
       showCustomNote('安装失败：' + r.error + '（可查看命令行日志）', 'err');
     }
-    loadPluginStatus();
-    loadInstalledList();
+    refreshPluginLists();
   }).catch((e) => {
     setPluginBusy(false);
     showCustomNote('安装异常：' + String((e && e.message) || e), 'err');
   });
 }
 
-// 卸载指定插件
-function uninstallPkg(pkg, btn) {
-  if (pluginBusy || !window.dsh || !window.dsh.uninstallPlugin) return;
+// 卸载指定插件（支持同时卸载多个不同插件，互不影响）
+function uninstallPkg(pkg) {
+  if (!window.dsh || !window.dsh.uninstallPlugin) return;
+  if (opFor({ pkg })) return; // 该插件已在操作中
   if (!window.confirm('确定要卸载插件 ' + pkg + ' 吗？')) return;
-  setPluginBusy(true);
-  if (btn) btn.disabled = true;
+  localBusy.set(pkg, 'uninstall');
+  refreshPluginLists();
   window.dsh.uninstallPlugin(pkg).then(() => {
-    setPluginBusy(false);
-    loadPluginStatus();
-    loadInstalledList();
+    localBusy.delete(pkg);
+    refreshPluginLists();
   }).catch(() => {
-    setPluginBusy(false);
-    loadPluginStatus();
-    loadInstalledList();
+    localBusy.delete(pkg);
+    refreshPluginLists();
   });
 }
 
@@ -697,13 +741,15 @@ function buildMarketItem(p) {
   desc.className = 'market-item-desc';
   desc.textContent = p.description || '（无描述）';
 
+  const op = opFor(p);
   const meta = document.createElement('div');
   meta.className = 'market-item-meta';
   const metaParts = [];
   metaParts.push(`★ ${formatStars(p.stars)}`);
   if (p.language) metaParts.push(p.language);
   if (p.license) metaParts.push(p.license);
-  if (p.installed) metaParts.push('已安装 v' + (p.installedVersion || '?'));
+  if (op === 'install') metaParts.push('正在安装中...');
+  else if (p.installed) metaParts.push('已安装 v' + (p.installedVersion || '?'));
   meta.textContent = metaParts.join(' · ');
 
   info.appendChild(nameRow);
@@ -714,7 +760,13 @@ function buildMarketItem(p) {
   // 操作
   const actions = document.createElement('div');
   actions.className = 'market-item-actions';
-  if (p.installed) {
+  if (op === 'install') {
+    const installing = document.createElement('button');
+    installing.className = 'btn btn-primary btn-sm';
+    installing.textContent = '安装中...';
+    installing.disabled = true;
+    actions.appendChild(installing);
+  } else if (p.installed) {
     const done = document.createElement('span');
     done.className = 'market-installed-label';
     done.textContent = '已安装';
@@ -744,9 +796,12 @@ function buildMarketItem(p) {
 function installMarketPlugin(p, btn) {
   if (marketBusy || !window.dsh || !window.dsh.installMarketPlugin) return;
   if (!p.pkgName) return;
+  if (opFor(p)) return; // 该插件已在操作中
   if (btn) btn.disabled = true;
+  localBusy.set(p.pkgName, 'install');
   restartHintCard.hidden = true; // 该卡片在插件页；从市场安装后也提示重启
   window.dsh.installMarketPlugin(p.pkgName).then((r) => {
+    localBusy.delete(p.pkgName);
     if (r && r.ok) {
       loadMarket();
       loadInstalledList();
@@ -754,6 +809,7 @@ function installMarketPlugin(p, btn) {
       btn.disabled = false;
     }
   }).catch(() => {
+    localBusy.delete(p.pkgName);
     if (btn) btn.disabled = false;
   });
 }
@@ -775,7 +831,7 @@ function loadMarket() {
     if (!res || !res.ok) {
       marketList.innerHTML = '';
       marketEmpty.hidden = false;
-      marketEmpty.textContent = '插件市场加载失败：' + ((res && res.error) || '未知错误') + '（可能触发了 GitHub 限流，稍后再试）';
+      marketEmpty.textContent = marketFailText((res && res.error) || '未知错误');
       marketTotal.textContent = '加载失败';
       marketPager.hidden = true;
       return;
@@ -804,10 +860,22 @@ function loadMarket() {
     marketList.classList.remove('loading');
     marketList.innerHTML = '';
     marketEmpty.hidden = false;
-    marketEmpty.textContent = '插件市场加载失败（网络异常）';
+    marketEmpty.textContent = marketFailText('网络异常');
     marketTotal.textContent = '加载失败';
     marketPager.hidden = true;
   });
+}
+
+// 根据错误类型生成可读的市场加载失败提示
+function marketFailText(errMsg) {
+  const msg = String(errMsg || '未知错误');
+  if (/rate limit|API rate|403|限流/i.test(msg)) {
+    return `插件市场加载失败：${msg}（触发了 GitHub 限流，请稍后再试）`;
+  }
+  if (/certificate|CERT|SSL|verify|network|网络/i.test(msg)) {
+    return `插件市场加载失败：${msg}（网络/证书问题，已自动重试仍失败，请稍后重试或检查代理设置）`;
+  }
+  return `插件市场加载失败：${msg}（请稍后重试）`;
 }
 
 marketSearchBtn.addEventListener('click', () => {
@@ -854,19 +922,26 @@ function openSettings() {
   }
 }
 
-// ============ 界面主题（深色 / 浅色） ============
-// 应用主题：在 <html> 上设置 data-theme，CSS 变量据此切换
-function applyTheme(theme) {
-  const t = theme === 'light' ? 'light' : 'dark';
+// ============ 界面主题（深色 / 浅色 / 跟随系统） ============
+// 应用主题：在 <html> 上设置 data-theme，CSS 变量据此切换。
+// theme 为档位（'dark' | 'light' | 'system'），resolved 为实际明暗（'dark' | 'light'）。
+function applyTheme(resolvedTheme) {
+  const t = resolvedTheme === 'light' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', t);
-  syncThemeButtons(t);
 }
 
-// 同步主题切换按钮高亮状态
+// 同步主题切换按钮高亮状态（按档位高亮，system 时不高亮任何一项或高亮 system 项）
 function syncThemeButtons(theme) {
-  const t = theme === 'light' ? 'light' : 'dark';
+  const t = theme === 'light' ? 'light' : (theme === 'dark' ? 'dark' : 'system');
   if (themeDarkBtn) themeDarkBtn.classList.toggle('active', t === 'dark');
   if (themeLightBtn) themeLightBtn.classList.toggle('active', t === 'light');
+  if (themeSystemBtn) themeSystemBtn.classList.toggle('active', t === 'system');
+}
+
+// 应用档位 + 实际明暗：HTML 切换 + 按钮高亮
+function applyThemeState(theme, resolved) {
+  applyTheme(resolved || theme);
+  syncThemeButtons(theme || 'system');
 }
 
 // 主题切换按钮：点击即切换并持久化
@@ -877,13 +952,18 @@ function setupThemeControls() {
   if (themeLightBtn) {
     themeLightBtn.addEventListener('click', () => setTheme('light'));
   }
+  if (themeSystemBtn) {
+    themeSystemBtn.addEventListener('click', () => setTheme('system'));
+  }
 }
 
 function setTheme(theme) {
-  const t = theme === 'light' ? 'light' : 'dark';
-  applyTheme(t);
+  const t = ['dark', 'light', 'system'].includes(theme) ? theme : 'system';
   if (window.dsh && window.dsh.setTheme) {
-    window.dsh.setTheme(t);
+    window.dsh.setTheme(t).then((r) => {
+      // 主进程已持久化 + 同步官方 UI + 广播，这里按返回结果刷新状态
+      if (r && r.ok) applyThemeState(r.theme, r.resolved);
+    }).catch(() => {});
   }
 }
 
@@ -913,15 +993,15 @@ function loadSettings() {
         setDshVersion.textContent = '当前版本：v' + cfg.dshVersion;
       }
       if (cfg.theme) {
-        applyTheme(cfg.theme);
+        applyThemeState(cfg.theme, cfg.themeResolved);
       }
       if (cfg.updateApiBase) {
         setUpdateBase.textContent = '更新服务：' + cfg.updateApiBase;
       }
       if (cfg.changelog) {
-        setChangelog.textContent = cfg.changelog;
+        setChangelog.innerHTML = renderMarkdown(cfg.changelog);
       } else {
-        setChangelog.textContent = '暂无更新日志';
+        setChangelog.innerHTML = '<p>暂无更新日志</p>';
       }
     }
   }).catch(() => {
@@ -1019,7 +1099,7 @@ function renderUpdateStatus(state) {
     setDownloadBtnText.textContent = '下载并安装';
     if (state.latest) {
       setNewVersion.textContent = state.latest.version;
-      setNewNotes.textContent = (state.latest.release_notes || '暂无更新日志') + '\n\n文件大小：' + formatSize(state.latest.file_size);
+      setNewNotes.innerHTML = renderMarkdown((state.latest.release_notes || '暂无更新日志') + '\n\n文件大小：' + formatSize(state.latest.file_size));
     }
   } else if (s === 'downloading') {
     setUpdateStatus.textContent = state.message || '正在下载...';
@@ -1058,6 +1138,103 @@ function formatSize(bytes) {
   return v.toFixed(v >= 100 ? 0 : 1) + ' ' + units[u];
 }
 
+// ============ Markdown 渲染（更新日志） ============
+// 轻量 Markdown 渲染器：仅覆盖更新日志常用语法 ——
+// 标题（# ~ ######）、无序列表（-/*/+）、有序列表（1.）、
+// 代码块（```）、行内代码（`code`）、粗体（**text**）、链接（[text](url)）。
+// 先对整个文本做 HTML 转义再解析，输出为安全 HTML（原始 `< > &` 不会被当标签解析）。
+function escapeHtmlText(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderMdInline(s) {
+  // 行内代码优先（避免 code 内的 ** / 链接标记被二次解析）
+  s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+  return s;
+}
+
+function renderMarkdown(md) {
+  const lines = escapeHtmlText(md || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const out = [];
+  let para = [];        // 段落行缓冲
+  let list = null;      // 当前列表容器：'ul' | 'ol'
+  let inCode = false;   // 是否处于代码块
+  let codeBuf = [];
+
+  const flushPara = () => {
+    if (para.length) {
+      out.push('<p>' + renderMdInline(para.join(' ')) + '</p>');
+      para = [];
+    }
+  };
+  const closeList = () => {
+    if (list) { out.push('</' + list + '>'); list = null; }
+  };
+  const openList = (type) => {
+    if (list !== type) { closeList(); out.push('<' + type + '>'); list = type; }
+  };
+
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (inCode) {
+      if (/^```/.test(line)) {
+        inCode = false;
+        out.push('<pre><code>' + codeBuf.join('\n') + '</code></pre>');
+        codeBuf = [];
+      } else {
+        codeBuf.push(line);
+      }
+      continue;
+    }
+    if (/^```/.test(line)) {
+      closeList(); flushPara();
+      inCode = true;
+      continue;
+    }
+    if (!line) { closeList(); flushPara(); continue; }
+
+    // 标题
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      closeList(); flushPara();
+      const level = h[1].length;
+      out.push('<h' + level + '>' + renderMdInline(h[2]) + '</h' + level + '>');
+      continue;
+    }
+
+    // 无序列表
+    const ul = line.match(/^[-*+]\s+(.*)$/);
+    if (ul) {
+      flushPara(); openList('ul');
+      out.push('<li>' + renderMdInline(ul[1]) + '</li>');
+      continue;
+    }
+
+    // 有序列表
+    const ol = line.match(/^\d+[.)]\s+(.*)$/);
+    if (ol) {
+      flushPara(); openList('ol');
+      out.push('<li>' + renderMdInline(ol[1]) + '</li>');
+      continue;
+    }
+
+    // 普通段落行
+    closeList();
+    para.push(line);
+  }
+  if (inCode && codeBuf.length) out.push('<pre><code>' + codeBuf.join('\n') + '</code></pre>');
+  closeList();
+  flushPara();
+  return out.join('\n');
+}
+
 // ============ 更新弹窗 ============
 let autoUpdatePopupShown = false; // 启动时自动弹窗只弹一次
 
@@ -1093,7 +1270,7 @@ function renderUpdatePopup(state) {
   if (s === 'available') {
     if (state.latest) {
       umNewVersion.textContent = state.latest.version;
-      umNotes.textContent = (state.latest.release_notes || '暂无更新日志') + '\n\n文件大小：' + formatSize(state.latest.file_size);
+      umNotes.innerHTML = renderMarkdown((state.latest.release_notes || '暂无更新日志') + '\n\n文件大小：' + formatSize(state.latest.file_size));
     }
     umProgress.hidden = true;
     umActionBtn.disabled = false;
@@ -1143,6 +1320,13 @@ if (!window.dsh) {
     applyTheme(window.dsh.theme);
   }
   setupThemeControls();
+
+  // 主进程推送主题变化（控制面板 / 官方 UI / 系统深浅色切换时实时跟随）
+  if (window.dsh.onThemeChanged) {
+    window.dsh.onThemeChanged(({ theme, resolved }) => {
+      applyThemeState(theme, resolved);
+    });
+  }
 
   // 阶段切换（mode / detect / install / start / running / stopped / error）
   window.dsh.onPhase(({ phase, service }) => {
@@ -1232,25 +1416,31 @@ if (!window.dsh) {
   window.dsh.onPluginEvent((ev) => {
     if (!ev) return;
     if (ev.stage === 'log') {
-      // 安装/卸载过程的命令行输出 → 统一显示在「自定义安装」卡片的命令行日志面板
+      // 安装/卸载过程的命令行输出 → 统一显示在「自定义安装」卡片的终端日志面板
       appendCustomLog(ev.message || '');
       return;
     }
+    if (ev.stage === 'command') {
+      // 原样展示用户执行的完整命令（如 $ npx @deepseek-ai/dsh plugin ...）
+      appendCustomLog('$ ' + (ev.command || ''));
+      ensureCustomLogOpen();
+      return;
+    }
     if (ev.stage === 'installing' || ev.stage === 'uninstalling') {
-      setPluginBusy(true);
+      if (ev.pkg) localBusy.set(ev.pkg, ev.stage === 'uninstalling' ? 'uninstall' : 'install');
       restartHintCard.hidden = true;
       showCustomNote(ev.message || '', '');
+      ensureCustomLogOpen();
+      refreshPluginLists();
     } else if (ev.stage === 'done') {
-      setPluginBusy(false);
+      if (ev.pkg) localBusy.delete(ev.pkg);
       showCustomNote((ev.message || '完成') + '，点击下方「立即重启服务」即可生效。', 'ok');
       restartHintCard.hidden = false; // 安装/卸载完成 → 提示"立即重启"
-      loadPluginStatus();
-      loadInstalledList();
+      refreshPluginLists();
     } else if (ev.stage === 'error') {
-      setPluginBusy(false);
+      if (ev.pkg) localBusy.delete(ev.pkg);
       showCustomNote(ev.message || '操作失败', 'err');
-      loadPluginStatus();
-      loadInstalledList();
+      refreshPluginLists();
     }
   });
 

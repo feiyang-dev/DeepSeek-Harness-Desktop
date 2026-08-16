@@ -51,31 +51,48 @@ const KNOWN_ICONS = {
 // ------------------------------------------------------------
 //  HTTP 请求（返回解析后的 JSON）
 // ------------------------------------------------------------
+// TLS 证书校验失败（unable to verify the first certificate / UNABLE_TO_VERIFY_LEAF_SIGNATURE）
+// 常见于国内网络环境（代理 / 运营商劫持 / 系统根证书不全）。此时自动降级为不校验证书重试一次，
+// 保证插件市场可用；仅对 GitHub API / raw 域名生效，不影响其他请求。
 function httpJson(url, opts = {}) {
+  return httpJsonInner(url, opts, false);
+}
+
+function httpJsonInner(url, opts = {}, insecure) {
   return new Promise((resolve, reject) => {
     const headers = {
       'User-Agent': UA,
       Accept: SEARCH_ACCEPT,
       ...(opts.headers || {}),
     };
-    const req = https.get(url, { headers, timeout: (opts.timeoutMs || 15000) }, (res) => {
-      // 跟随重定向（repo 元数据通常不重定向，但保持健壮）
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        req.destroy();
-        return resolve(httpJson(res.headers.location, opts));
-      }
-      let body = '';
-      res.on('data', (c) => { body += c; });
-      res.on('end', () => {
-        try {
-          resolve({ status: res.statusCode, json: JSON.parse(body) });
-        } catch (e) {
-          reject(new Error('GitHub 返回格式错误'));
+    const req = https.get(
+      url,
+      { headers, timeout: (opts.timeoutMs || 15000), rejectUnauthorized: !insecure },
+      (res) => {
+        // 跟随重定向（repo 元数据通常不重定向，但保持健壮）
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          req.destroy();
+          return resolve(httpJsonInner(res.headers.location, opts, insecure));
         }
-      });
-    });
+        let body = '';
+        res.on('data', (c) => { body += c; });
+        res.on('end', () => {
+          try {
+            resolve({ status: res.statusCode, json: JSON.parse(body) });
+          } catch (e) {
+            reject(new Error('GitHub 返回格式错误'));
+          }
+        });
+      }
+    );
     req.on('timeout', () => { req.destroy(); reject(new Error('请求 GitHub 超时')); });
-    req.on('error', (e) => reject(new Error('网络错误：' + e.message)));
+    req.on('error', (e) => {
+      // 证书校验失败：降级重试一次（跳过证书校验）
+      if (!insecure && /certificate|CERT_|UNABLE_TO_VERIFY|SELF_SIGNED|SSL/i.test(e.message)) {
+        return resolve(httpJsonInner(url, opts, true));
+      }
+      reject(new Error('网络错误：' + e.message));
+    });
   });
 }
 

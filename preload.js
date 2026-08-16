@@ -78,8 +78,14 @@ contextBridge.exposeInMainWorld('dsh', {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   // 通知开关
   setNotifications: (enabled) => ipcRenderer.invoke('settings:set-notifications', enabled),
-  // 界面主题切换（'dark' | 'light'），持久化保存
+  // 界面主题切换（'dark' | 'light' | 'system'），持久化保存并同步官方 WebUI
   setTheme: (theme) => ipcRenderer.invoke('settings:set-theme', theme),
+  // 主题变化事件（主进程推送：控制面板 / 官方 UI / 系统深浅色变化时触发）
+  onThemeChanged: (cb) => {
+    const listener = (_e, d) => cb(d);
+    ipcRenderer.on('theme:changed', listener);
+    return () => ipcRenderer.removeListener('theme:changed', listener);
+  },
   // 开发者选项模式开关（对下次启动生效）
   setDeveloperMode: (enabled) => ipcRenderer.invoke('settings:set-developer-mode', enabled),
   // dsh 运行环境版本信息（当前运行版本 + registry 最新版本）
