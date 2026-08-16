@@ -170,11 +170,22 @@ function validatePkgSpec(input) {
 // ------------------------------------------------------------
 //  状态查询
 // ------------------------------------------------------------
+// 别名感知：查询某包时，若其「旧名别名」已安装（如数据保险箱
+// @feiyang666/deepseekharnessdesktop-vault -> @feiyang666/dsh-vault），
+// 状态仍判为已安装，并返回 legacyAlias 供前端提示「可迁移到新包名」。
 function pluginStatus(dir, pkg) {
   const name = pkg || PLUGIN_PKG;
   const manifest = readManifest(dir) || {};
   const bundles = (manifest.dsh && manifest.dsh.profile && manifest.dsh.profile.bundles) || [];
-  const pkgDir = installedPkgDir(dir, name);
+
+  // 新包名查询，若新包未装但旧名已装 → 用旧名状态兜底（识别为已安装）
+  let effectiveName = name;
+  if (!installedPkgDir(dir, name) && !(manifest.dependencies && manifest.dependencies[name])) {
+    const legacy = legacyAliasFor(name);
+    if (legacy && installedPkgDir(dir, legacy)) effectiveName = legacy;
+  }
+
+  const pkgDir = installedPkgDir(dir, effectiveName);
   let version = '';
   let bundleDeclared = false;
   if (pkgDir) {
@@ -184,17 +195,26 @@ function pluginStatus(dir, pkg) {
       bundleDeclared = !!(p.dsh && p.dsh.bundle && p.dsh.bundle.patch);
     }
   }
-  const inDeps = !!(manifest.dependencies && manifest.dependencies[name]);
+  const inDeps = !!(manifest.dependencies && manifest.dependencies[effectiveName]);
   return {
     pkg: name,
+    installedPkg: effectiveName, // 实际命中的包名（可能为旧名）
+    legacyInstalled: effectiveName !== name,
     profile: path.basename(dir),
     profileDir: dir,
     installed: !!pkgDir && inDeps,
-    bundled: bundles.includes(name),
+    bundled: bundles.includes(effectiveName),
     version,
     bundleDeclared,
     dshHome: dshHomeDir(),
   };
+}
+
+// 查询某包对应的旧名别名（数据保险箱改名映射）
+function legacyAliasFor(name) {
+  if (name === PLUGIN_VAULT_PKG) return PLUGIN_VAULT_PKG_LEGACY;
+  if (name === PLUGIN_VAULT_PKG_LEGACY) return PLUGIN_VAULT_PKG;
+  return null;
 }
 
 // 列出 profile 中用户安装的插件（含依赖中声明且在 node_modules 中有实体的包）
@@ -314,6 +334,21 @@ async function installPlugin(options) {
   const name = options.pkg || PLUGIN_PKG;
   const dir = profileDir(options.profile);
   ensureProfile(dir);
+
+  // 旧包名自动迁移：安装新包名时，若旧名别名已安装（如数据保险箱
+  // @feiyang666/deepseekharnessdesktop-vault -> @feiyang666/dsh-vault），
+  // 先卸载旧包，避免新旧包并存导致功能重复/冲突。
+  const legacy = legacyAliasFor(name);
+  if (legacy) {
+    const legacyManifest = readManifest(dir);
+    const legacyPkgDir = installedPkgDir(dir, legacy);
+    const legacyInDeps = !!(legacyManifest && legacyManifest.dependencies && legacyManifest.dependencies[legacy]);
+    if (legacyPkgDir && legacyInDeps) {
+      if (options.onOut) options.onOut(`检测到旧包名 ${legacy}，先卸载旧包再安装新包名...`);
+      await uninstallPlugin({ nodeExe: options.nodeExe, npmCli: options.npmCli, registry: options.registry, pkg: legacy, onOut: options.onOut });
+    }
+  }
+
   const env = {
     ...(options.env || process.env),
     npm_config_ignore_scripts: 'true', // 跳过 koffi 等源码编译
@@ -557,6 +592,7 @@ module.exports = {
   PLUGIN_VAULT_PKG,
   PLUGIN_VAULT_PKG_LEGACY,
   PLUGIN_VAULT_PKGS,
+  legacyAliasFor,
   DEFAULT_PROFILE,
   BASE_PKGS,
   RECOMMENDED_PLUGINS,

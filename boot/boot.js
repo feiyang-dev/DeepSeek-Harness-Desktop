@@ -453,6 +453,7 @@ function buildRecItem(p) {
   } else if (p.installed) {
     parts.push('已安装' + (p.version ? ' v' + p.version : ''));
     parts.push(p.bundled ? '已注册（重启服务后自动加载）' : '未注册 bundles');
+    if (p.legacyInstalled) parts.push('旧包名安装，建议迁移到新包名');
   } else {
     parts.push('未安装');
   }
@@ -466,7 +467,13 @@ function buildRecItem(p) {
   const installBtn = document.createElement('button');
   installBtn.className = 'settings-btn primary';
   installBtn.dataset.action = 'install';
-  installBtn.textContent = op === 'install' ? '安装中...' : '一键安装';
+  // 旧包名已安装：按钮变为「迁移到新包名」（主进程会先卸载旧包再装新包）
+  if (p.legacyInstalled) {
+    installBtn.textContent = op === 'install' ? '安装中...' : '迁移到新包名';
+    installBtn.classList.add('migrate');
+  } else {
+    installBtn.textContent = op === 'install' ? '安装中...' : '一键安装';
+  }
   installBtn.hidden = (!!p.installed && op !== 'install') || op === 'uninstall';
   installBtn.disabled = !!op || pluginBusy;
   installBtn.addEventListener('click', () => doPluginInstall(p.pkg));

@@ -650,6 +650,16 @@ html, body {
   align-items: flex-end;
 }
 .plugin-rec-actions .settings-btn { padding: 5px 13px; }
+.plugin-rec-actions .settings-btn.migrate {
+  background: var(--warn-bg, #fdf6e3);
+  color: #b45309;
+  border-color: rgba(180, 83, 9, 0.35);
+}
+html[data-theme="dark"] .plugin-rec-actions .settings-btn.migrate {
+  background: rgba(180, 83, 9, 0.18);
+  color: #fbbf24;
+  border-color: rgba(180, 83, 9, 0.45);
+}
 
 /* 已安装列表 */
 .installed-list { display: flex; flex-direction: column; gap: 8px; }
