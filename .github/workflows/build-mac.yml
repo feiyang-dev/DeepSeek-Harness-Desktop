@@ -41,7 +41,10 @@ jobs:
       - name: 打包 macOS 安装包（未签名，双架构）
         # identity: null 已跳过签名；CSC_IDENTITY_AUTO_DISCOVERY=false 兜底，
         # 避免机器上恰好存在任何签名身份时 electron-builder 尝试签名而失败
-        run: npm run dist:mac -- --x64 --arm64
+        # --publish never：仅构建不自动发布（推送 v* 标签时 electron-builder
+        # 默认 onTagOrDraft 会尝试上传到 GitHub Release，而 runner 无 GH_TOKEN 会失败），
+        # 产物通过下方 upload-artifact 上传，再由发布脚本手动挂到 Release
+        run: npm run dist:mac -- --x64 --arm64 --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
