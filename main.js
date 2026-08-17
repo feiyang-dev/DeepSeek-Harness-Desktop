@@ -2309,12 +2309,17 @@ async function clearLocalRuntime() {
       if (isWin) await killProcessOnPort(port);
       onServiceExited();
     }
-    // 2) 删除本地运行环境目录（含 node_modules 与入口）
+    // 2) 异步删除本地运行环境目录（含 node_modules 与入口）。
+    //    注意：必须用 fs.promises.rm（异步），不能用 fs.rmSync —— 该目录有数百 MB
+    //    小文件，同步删除会长时间阻塞主进程事件循环，导致 APP 窗口卡死。
+    setProgress(10, 'install', '正在清除本地运行环境...', '正在删除 ' + dir + '，请稍候');
     if (fs.existsSync(dir)) {
-      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+      await fs.promises.rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
     }
+    setProgress(20, 'install', '本地运行环境已清除');
   } catch (e) {
     logLine(`[清除] 停止服务或删除目录时出错：${e.message}`);
+    stopInstallTicker();
     return {
       ok: false,
       dir,
@@ -2478,6 +2483,9 @@ function createMainWindow() {
       // 退出 Web 界面：关闭 WebUI 窗口，保留引导台与服务
       mainWindow.destroy();
       mainWindow = null;
+      // 通知引导台回到「运行控制台」（服务仍在运行），
+      // 否则引导台仍停留在"100% 正在打开界面"的进度页，看似卡死
+      broadcast('boot:phase', { phase: 'running', service: { ...serviceState } });
       if (tray && tray.displayBalloon) {
         tray.displayBalloon({
           title: APP_NAME,
