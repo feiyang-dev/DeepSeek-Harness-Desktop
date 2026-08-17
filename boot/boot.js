@@ -40,6 +40,7 @@ const stepTitle = document.getElementById('stepTitle');
 const stageIconEl = document.getElementById('stageIcon');
 const progressDetailEl = document.getElementById('progressDetail');
 const progressHintEl = document.getElementById('progressHint');
+const firstInstallTip = document.getElementById('firstInstallTip');
 const footer = document.getElementById('footer');
 const btnOpenNode = document.getElementById('btnOpenNode');
 const btnRetry = document.getElementById('btnRetry');
@@ -128,6 +129,9 @@ const setWorkspaceHint = document.getElementById('setWorkspaceHint');
 const setDshVersion = document.getElementById('setDshVersion');
 const setDshCheckBtn = document.getElementById('setDshCheckBtn');
 const setDshVersionNote = document.getElementById('setDshVersionNote');
+const setLocalRuntimePath = document.getElementById('setLocalRuntimePath');
+const setLocalClearBtn = document.getElementById('setLocalClearBtn');
+
 const setUpdateStatus = document.getElementById('setUpdateStatus');
 const setUpdateHint = document.getElementById('setUpdateHint');
 const setCheckBtn = document.getElementById('setCheckBtn');
@@ -182,14 +186,20 @@ function appendLog(text) {
   if (!logBody.querySelector('.log-line') && logBody.querySelector('.log-hint')) {
     logBody.innerHTML = '';
   }
+  // 隐藏 npm 依赖下载进度刷屏日志（npm http fetch / cache revalidated / cache hit 等）
+  if (logFilterNpm && logFilterNpm.checked && /npm http fetch|cache revalidated|cache hit|npm http cache/.test(text)) {
+    return;
+  }
   logCount += 1;
   logBadge.textContent = String(logCount);
   const div = document.createElement('div');
   div.className = 'log-line';
-  if (/错误|失败|Error|error/.test(text)) div.classList.add('err');
+  if (/错误|失败|Error|error|FATAL/.test(text)) div.classList.add('err');
   div.textContent = text;
   logBody.appendChild(div);
-  logBody.scrollTop = logBody.scrollHeight;
+  if (!(logPauseScroll && logPauseScroll.checked)) {
+    logBody.scrollTop = logBody.scrollHeight;
+  }
 }
 
 // ============ 进度 ============
@@ -225,12 +235,26 @@ function showScreen(name) {
 // 模式卡片（chooseMode 已置 disabled 且 modeChosen=true），这里按 currentPhase
 // 统一路由 —— 启动中回到进度页、运行中/已停止回到控制台、mode 才回到模式选择。
 function openHomePage() {
-  if (currentPhase === 'detect' || currentPhase === 'install' || currentPhase === 'start' ||
-      currentPhase === 'ready' || currentPhase === 'init' || currentPhase === 'error') {
-    // 启动进行中 / 已出错：回到进度页继续查看进度或错误信息
-    showScreen('progress');
+  // 优先向主进程查询真实状态，避免前端 currentPhase 残留（如启动完成瞬间为 'ready'）
+  // 导致切页回首页时误判为"启动中"而卡在进度页。
+  if (window.dsh && window.dsh.getServiceState) {
+    window.dsh.getServiceState().then((st) => {
+      if (!st) { openHomeByPhase(); return; }
+      currentPhase = st.phase || 'mode';
+      // 'ready' 表示启动已就绪（finishBoot 尚未广播 running 的瞬间），按运行中处理
+      if (st.phase === 'running' || st.phase === 'ready') {
+        currentPhase = 'running';
+        lastService = st;
+      }
+      openHomeByPhase();
+    }).catch(() => openHomeByPhase());
     return;
   }
+  openHomeByPhase();
+}
+
+// 按当前阶段渲染首页（被 openHomePage 调用）
+function openHomeByPhase() {
   if (currentPhase === 'running') {
     renderHome('running', lastService);
     showScreen('home');
@@ -241,7 +265,14 @@ function openHomePage() {
     showScreen('home');
     return;
   }
-  // mode 或未知阶段：回到模式选择（renderHome 内部会重置卡片为可点击状态）
+  if (currentPhase === 'detect' || currentPhase === 'install' || currentPhase === 'start' ||
+      currentPhase === 'init' || currentPhase === 'error') {
+    // 启动进行中 / 已出错：回到进度页继续查看进度或错误信息
+    showScreen('progress');
+    return;
+  }
+  // 'ready' / 'mode' / 未知阶段：显示模式选择（ready 时服务其实已 running，
+  // 主进程查询会把 currentPhase 校正为 running，此处不会真正走到）
   renderHome('mode');
   showScreen('home');
 }
@@ -294,7 +325,8 @@ function startUptimeTicker(service) {
     statusDesc.textContent = `服务运行于 http://127.0.0.1:${port} · 已运行 ${formatUptime(secs * 1000)}${dshVer ? ' · dsh v' + dshVer : ''}${devMode ? ' · 开发者模式' : ''}`;
   };
   tick();
-  uptimeTimer = setInterval(tick, 5000);
+  // 每秒更新，秒数实时跳动（1、2、3...）
+  uptimeTimer = setInterval(tick, 1000);
 }
 
 // 运行状态栏：极速模式检测到官方新版时显示「一键更新」横幅
@@ -1225,7 +1257,7 @@ const I18N = {
     homeTitle: 'DeepSeek Harness 桌面版',
     homeSubtitle: '选择启动模式，开始使用',
     homeHint: '请选择一种启动模式，本页面不会自动进入',
-    modeDetailsSummary: '▸ 极速启动运行原理（为什么快？）',
+    modeDetailsSummary: '查看详情 · 极速启动运行原理（为什么快？）',
     modeDetailsQ1: '为什么原「快速启动」很慢？',
     modeDetailsA1: '原「快速启动」走的是 npm exec（npx）：dsh 官方包拆成了 150+ 个相互依赖的子包，每次启动 npm 都要对每一个子包逐个向 registry 发 HTTP 请求做版本校验（cache revalidated），即使本地已有缓存也要逐个校验并解压。这 150+ 个包的串行校验与解压，全部命中缓存也要 100~200 秒 —— 这就是「启动一个服务要 200 多秒」的根本原因，并不是网络慢，而是 npm 每次都在重复解析整棵依赖树。',
     modeDetailsQ2: '极速启动是如何做到秒级启动的？',
@@ -1311,6 +1343,9 @@ const I18N = {
     setDevModeDesc: '选择「源码完整安装」时分离运行「服务端后端」与「浏览器端热更 watcher（pnpm dev:web）」两个进程，改动客户端插件源码后自动重建并热更。需先完成一次「源码完整安装」，开关对下次启动生效。',
     setRuntimeTitle: '运行环境（dsh）',
     setRuntimeDesc: '极速启动：本地运行秒级启动；后台自动检查官方新版本，发现新版可在运行状态栏一键更新',
+    setLocalRuntimeTitle: '本地运行环境',
+    setLocalRuntimeDesc: '极速启动将 dsh 及依赖安装到此固定目录，用于秒级离线启动。清除后下次选择「极速启动」会重新联网安装（首次安装通常需 3~10 分钟）。',
+    setLocalClear: '清除本地运行环境',
     setDshCheck: '检查最新版本',
     setUpdateTitle: '检查更新',
     setCheckNow: '立即检查',
@@ -1325,6 +1360,9 @@ const I18N = {
     stageInstall: '安装运行环境',
     stageStart: '启动服务中',
     stageReady: '启动完成',
+    firstInstallTitle: '⏳ 首次安装运行环境',
+    firstInstallText: '本机还未安装运行环境，正在从国内镜像下载依赖（约数百 MB）。首次安装通常需要 3~10 分钟，取决于你的网络速度。',
+    firstInstallSub: '请保持窗口打开并耐心等待，安装完成后会自动启动服务。进度条可能短暂停留，属正常现象。',
     stageError: '启动失败',
     stageRestart: '重新运行',
     pluginInstalling: '正在安装中...',
@@ -1376,7 +1414,7 @@ const I18N = {
     homeTitle: 'DeepSeek Harness Desktop',
     homeSubtitle: 'Choose a launch mode to get started',
     homeHint: 'Choose a launch mode — this page does not auto-start',
-    modeDetailsSummary: '▸ How Instant Start works (why is it fast?)',
+    modeDetailsSummary: 'Details · How Instant Start works (why is it fast?)',
     modeDetailsQ1: 'Why was the old "Quick Start" so slow?',
     modeDetailsA1: 'The old "Quick Start" used npm exec (npx): the official dsh package is split into 150+ interdependent sub-packages, and every startup made npm send an HTTP request to the registry for each sub-package to validate its version (cache revalidated), even when the local cache already existed — then unpacked each one. Serializing the validation and unpacking of 150+ packages takes 100~200 seconds even with a fully warm cache. That is the real reason a service took 200+ seconds to start: not a slow network, but npm re-resolving the entire dependency tree every time.',
     modeDetailsQ2: 'How does Instant Start launch in seconds?',
@@ -1462,6 +1500,9 @@ const I18N = {
     setDevModeDesc: 'When choosing "Full Source Build", runs "service backend" and "browser hot-reload watcher (pnpm dev:web)" as two processes; changes to client plugin sources rebuild and hot-reload automatically. A "Full Source Build" must be done first. Applies on next launch.',
     setRuntimeTitle: 'Runtime (dsh)',
     setRuntimeDesc: 'Instant Start: instant launch from a local runtime; auto-checks official new versions in the background — update with one click when available',
+    setLocalRuntimeTitle: 'Local Runtime',
+    setLocalRuntimeDesc: 'Instant Start installs dsh and its dependencies into this fixed directory for second-level offline launches. Clearing it means the next "Instant Start" will re-install online (usually 3~10 minutes).',
+    setLocalClear: 'Clear Local Runtime',
     setDshCheck: 'Check Latest Version',
     setUpdateTitle: 'Check for Updates',
     setCheckNow: 'Check Now',
@@ -1476,6 +1517,9 @@ const I18N = {
     stageInstall: 'Installing runtime',
     stageStart: 'Starting service',
     stageReady: 'Ready',
+    firstInstallTitle: '⏳ First-time runtime installation',
+    firstInstallText: 'No runtime environment found on this machine. Downloading dependencies (about a few hundred MB) from the domestic mirror. First-time installation usually takes 3~10 minutes depending on your network speed.',
+    firstInstallSub: 'Please keep this window open and wait patiently. The service starts automatically once installation finishes. A brief pause of the progress bar is normal.',
     stageError: 'Startup failed',
     stageRestart: 'Restarting',
     pluginInstalling: 'Installing...',
@@ -1641,6 +1685,15 @@ function applyAppName(name, tagline) {
 
 function loadSettings() {
   if (!window.dsh || !window.dsh.getSettings) return;
+  // 即时加载极速启动本地运行环境位置（不等待网络版本查询，设置页打开即显示路径）
+  if (window.dsh.getLocalRuntimeInfo) {
+    window.dsh.getLocalRuntimeInfo().then((info) => {
+      if (info && info.localDir && setLocalRuntimePath) {
+        setLocalRuntimePath.textContent = info.localDir;
+        setLocalRuntimePath.title = info.localDir;
+      }
+    }).catch(() => {});
+  }
   window.dsh.getSettings().then((cfg) => {
     if (cfg) {
       applyAppName(cfg.appName, cfg.appTagline);
@@ -1744,6 +1797,11 @@ function loadDshVersionInfo() {
   setDshCheckBtn.disabled = true;
   window.dsh.getDshVersionInfo().then((info) => {
     setDshCheckBtn.disabled = false;
+    // 展示极速启动本地运行环境位置（无论版本查询是否成功）
+    if (info && info.localDir && setLocalRuntimePath) {
+      setLocalRuntimePath.textContent = info.localDir;
+      setLocalRuntimePath.title = info.localDir;
+    }
     if (!info || !info.ok) {
       if (info && info.running) setDshVersion.textContent = t('setCurrentVersion') + 'v' + info.running;
       showDshNote((currentLanguage === 'en' ? 'Failed to check latest version: ' : '最新版本查询失败：') + ((info && info.error) || (currentLanguage === 'en' ? 'unknown error' : '未知错误')) + (currentLanguage === 'en' ? ' (check network and retry)' : '（检查网络后重试）'), 'err');
@@ -1767,6 +1825,35 @@ function loadDshVersionInfo() {
 }
 
 setDshCheckBtn.addEventListener('click', loadDshVersionInfo);
+
+// 清除本地运行环境（极速启动固定目录）：确认 → 停止服务 → 删除目录
+setLocalClearBtn.addEventListener('click', () => {
+  if (!window.dsh || !window.dsh.clearLocalRuntime) return;
+  const pathTxt = setLocalRuntimePath.textContent || '';
+  if (!window.confirm(currentLanguage === 'en'
+    ? 'Clear the local runtime? This deletes the directory: ' + pathTxt + ' . Next "Instant Start" will re-install it online (usually 3~10 min).'
+    : '确定要清除本地运行环境吗？将删除目录：' + pathTxt + '。下次选择「极速启动」会重新联网安装（通常需 3~10 分钟）。')) return;
+  setLocalClearBtn.disabled = true;
+  setLocalClearBtn.textContent = currentLanguage === 'en' ? 'Clearing...' : '清除中...';
+  window.dsh.clearLocalRuntime().then((r) => {
+    setLocalClearBtn.disabled = false;
+    setLocalClearBtn.textContent = t('setLocalClear');
+    if (r && r.ok) {
+      alert(currentLanguage === 'en'
+        ? 'Local runtime cleared. The next "Instant Start" will re-install it online.'
+        : '本地运行环境已清除。下次选择「极速启动」会重新联网安装。');
+      // 刷新版本信息与运行状态
+      if (window.dsh.getServiceState) window.dsh.getServiceState().then((st) => { if (st) { currentPhase = st.phase || 'mode'; } });
+      loadDshVersionInfo();
+    } else {
+      alert((r && r.error) || (currentLanguage === 'en' ? 'Clear failed, see log' : '清除失败，请查看日志'));
+    }
+  }).catch(() => {
+    setLocalClearBtn.disabled = false;
+    setLocalClearBtn.textContent = t('setLocalClear');
+    alert(currentLanguage === 'en' ? 'Clear failed, see log' : '清除失败，请查看日志');
+  });
+});
 
 setCheckBtn.addEventListener('click', () => {
   if (window.dsh && window.dsh.checkUpdate) {
@@ -2075,7 +2162,7 @@ if (!window.dsh) {
   });
 
   // 进度事件（含实时细节 detail 与人性化提示 hint、步骤 step）
-  window.dsh.onProgress(({ percent, stage, text, detail, hint, step }) => {
+  window.dsh.onProgress(({ percent, stage, text, detail, hint, step, firstInstall }) => {
     // 记录当前阶段：启动过程中主进程只广播 boot:progress，首页导航靠它恢复正确界面
     if (stage === 'detect' || stage === 'install' || stage === 'start' || stage === 'ready') {
       currentPhase = stage;
@@ -2093,6 +2180,13 @@ if (!window.dsh) {
     else progressDetailEl.textContent = '';
     if (hint) progressHintEl.textContent = hint;
     else progressHintEl.textContent = '';
+    // 首次安装（极速启动第一次下载依赖 / Node.js 首次安装）时展示醒目提示，请用户耐心等待。
+    // 优先使用主进程广播的 firstInstall 标志（精确）；旧版兼容：回退到文案匹配。
+    if (firstInstallTip) {
+      const isFirstInstall = firstInstall === true ||
+        (stage === 'install' && text && /未检测到|首次|正在安装/.test(text));
+      firstInstallTip.hidden = !isFirstInstall;
+    }
     if (step && step.total) {
       stepIndicator.hidden = false;
       stepPill.textContent = `${t('stepPrefix')} ${step.index}/${step.total}`;

@@ -170,6 +170,7 @@ let host = '127.0.0.1';
 
 let bootWindow = null;   // 首页引导窗口（常驻：模式选择 / 运行状态控制台 / 插件管理 / 设置）
 let mainWindow = null;   // WebUI 主窗口（独立新窗口，加载 http://host:port）
+let closeDialogOpen = false; // WebUI 关闭确认框是否已弹出（防重复弹窗）
 let tray = null;
 let serverProc = null;          // dsh 服务进程
 let serverSpawnedByUs = false;
@@ -177,6 +178,7 @@ let devWebProc = null;          // 开发者选项模式：浏览器端热更 wa
 let quitting = false;
 let developerMode = false;      // 开发者选项模式（设置中持久化，对下次启动生效）
 let bootPhase = 'init';         // mode / detect / install / start / running / stopped / error
+let bootProgressPercent = 0;    // 最近一次广播的启动进度百分比
 let symlinkHealed = false;      // .dsh/profiles symlink 是否已自动修复过（防无限重启）
 // npx 缓存自动修复预算（模块级，跨 startWebViaNpx 递归调用共享，防无限重启）。
 // 两类问题独立计数：原生崩溃重下也救不了 ABI 不兼容，只修 1 次；
@@ -187,6 +189,12 @@ let cacheRepairBudget = 2;      // npx 缓存损坏（文件缺失 / main 入口
 let selectedMode = null;        // 'quick' | 'source' | 'repair' | 'local'
 let modeTimer = null;
 let portCleanupDone = false;    // 启动时端口清理是否完成
+
+// 环境定位缓存：极速启动（本地固定目录）每次点击都要走 findNodeExe/findNpmCli，
+// 而 which() 内部会 spawn 子进程（where 命令），几百毫秒纯属浪费。缓存结果，
+// 同一应用会话内复用；安装 Node 后会主动清缓存（见 installNodeOfficial）。
+let cachedNodeExe = null;
+let cachedNpmCli = null;
 
 // 服务运行状态（供首页"正在运行中"控制台展示）
 const serviceState = {
@@ -258,6 +266,7 @@ const MODE_STEPS = {
 };
 
 let currentSteps = null; // 当前模式的步骤表
+let firstInstallShown = false; // 本次启动是否已向前端发出过「首次安装」提示
 
 // 根据进度百分比解析当前步骤
 function resolveStep(percent) {
@@ -270,14 +279,83 @@ function resolveStep(percent) {
 }
 
 function setProgress(percent, stage, text, detail, hint) {
+  const p = Math.max(0, Math.min(100, Math.round(percent)));
+  // 强制单调递增：进度只往前走，不回退（除非 resetProgress 显式重置）。
+  // 修复各模式百分比与阶段脱节的问题（如"正在安装"却显示 60%、到不了 100%）。
+  const effective = p >= bootProgressPercent ? p : bootProgressPercent;
   bootPhase = stage;
+  bootProgressPercent = effective;
+  // 安装阶段自动启动"慢进"定时器（下载依赖时进度持续走动），离开 install 阶段即停止
+  if (stage === 'install') {
+    startInstallTicker();
+  } else if (stage !== 'install') {
+    stopInstallTicker();
+  }
   broadcast('boot:progress', {
-    percent: Math.max(0, Math.min(100, Math.round(percent))),
+    percent: effective,
     stage,
     text,
     detail: detail || '',
     hint: hint || '',
-    step: resolveStep(percent),
+    step: resolveStep(effective),
+  });
+}
+
+// 重置进度（仅在启动模式切换 / 重新运行时调用，避免上次残留的百分比卡住新进度）
+function resetProgress() {
+  bootProgressPercent = 0;
+  firstInstallShown = false;
+  stopInstallTicker();
+}
+
+// ===== 安装阶段"慢进"机制 =====
+// 大文件下载（如首次安装数百 MB 依赖）阶段可能长时间没有任何 setProgress 事件，
+// 进度条会卡在某个数字不动，给用户"卡死"的错觉。这里用一个低频定时器，
+// 在 install 阶段内缓慢推进百分比（最高到安装阶段的合理上限），让进度"一直在走"。
+let installTicker = null;
+function startInstallTicker() {
+  if (installTicker) return;
+  installTicker = setInterval(() => {
+    // 仅当仍处于 install 阶段、且尚未进入等待/就绪阶段时慢进
+    if (bootPhase !== 'install' || bootProgressPercent >= 95) {
+      stopInstallTicker();
+      return;
+    }
+    // 每次 +0.3%，约 5 分钟从 0 爬到 90；配合真实进度事件，实际到不了上限
+    const next = Math.min(bootProgressPercent + 0.3, 92);
+    bootProgressPercent = next;
+    broadcast('boot:progress', {
+      percent: Math.round(next),
+      stage: 'install',
+      text: null,
+      detail: null,
+      hint: null,
+      // 保持首次安装提示可见（避免慢进事件把已显示的首次安装提示关掉）
+      firstInstall: firstInstallShown,
+      step: resolveStep(next),
+    });
+  }, 2000);
+}
+function stopInstallTicker() {
+  if (installTicker) {
+    clearInterval(installTicker);
+    installTicker = null;
+  }
+}
+
+// 通知前端「这是首次安装 / 大文件下载」，让进度页展示醒目提示引导用户耐心等待。
+// firstInstallShown 防止同一次启动重复广播（安装进度会多次 setProgress）。
+function notifyFirstInstall() {
+  if (firstInstallShown) return;
+  firstInstallShown = true;
+  broadcast('boot:progress', {
+    percent: Math.max(0, Math.min(100, Math.round(bootProgressPercent))),
+    stage: bootPhase,
+    text: null,
+    detail: null,
+    hint: null,
+    firstInstall: true,
+    step: resolveStep(bootProgressPercent),
   });
 }
 
@@ -338,6 +416,7 @@ function logLine(line) {
 // 启动失败：透传可选的崩溃码，前端据此展示针对性修复建议
 function bootError(message, crashCode) {
   bootPhase = 'error';
+  stopInstallTicker();
   logLine(`[错误] ${message}`);
   broadcast('boot:status', { phase: 'error', message, crashCode: crashCode != null ? Number(crashCode) : null });
   refreshTrayMenu();
@@ -373,7 +452,7 @@ async function waitForWebReady(checkPort, timeoutMs, onTick, shouldAbort) {
     if (shouldAbort && shouldAbort()) return false;
     if (await isWebReady(checkPort)) return true;
     onTick && onTick();
-    await new Promise((r) => setTimeout(r, 800));
+    await new Promise((r) => setTimeout(r, 300));
   }
   return false;
 }
@@ -444,10 +523,13 @@ function findNodeExeSyncFallback() {
 }
 
 async function findNodeExe() {
+  if (cachedNodeExe) return cachedNodeExe;
   const w = await which('node');
-  if (w) return w;
+  if (w) { cachedNodeExe = w; return w; }
   // PATH 未刷新（刚安装 / 未加入 PATH）时，回退到官方安装目录定位
-  return findNodeExeSyncFallback();
+  const fb = findNodeExeSyncFallback();
+  if (fb) cachedNodeExe = fb;
+  return fb;
 }
 
 // 官方 Git for Windows 的常见安装位置（机器级 + 每用户），用于 PATH 未刷新时仍能定位 git.exe
@@ -480,6 +562,7 @@ async function findGitExe() {
 }
 
 async function findNpmCli() {
+  if (cachedNpmCli) return cachedNpmCli;
   const nodeExe = await findNodeExe();
   if (!nodeExe) return null;
   const nodeDir = path.dirname(nodeExe);
@@ -487,12 +570,12 @@ async function findNpmCli() {
     path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
   ];
   for (const c of candidates) {
-    if (fs.existsSync(c)) return c;
+    if (fs.existsSync(c)) { cachedNpmCli = c; return c; }
   }
   const npmCmd = await which('npm');
   if (npmCmd) {
     const c2 = path.join(path.dirname(npmCmd), 'node_modules', 'npm', 'bin', 'npm-cli.js');
-    if (fs.existsSync(c2)) return c2;
+    if (fs.existsSync(c2)) { cachedNpmCli = c2; return c2; }
   }
   // macOS：Homebrew 安装的 node/npm 是符号链接（/opt/homebrew/bin/npm →
   // ../lib/node_modules/npm/bin/npm-cli.js），上面两种布局都找不到。
@@ -502,7 +585,7 @@ async function findNpmCli() {
     const root = String(rootR.out || '').trim().split(/\r?\n/).pop().trim();
     if (root) {
       const c3 = path.join(root, 'npm', 'bin', 'npm-cli.js');
-      if (fs.existsSync(c3)) return c3;
+      if (fs.existsSync(c3)) { cachedNpmCli = c3; return c3; }
     }
   }
   return null;
@@ -608,6 +691,9 @@ async function installNodeOfficial() {
     logLine('[环境] Node.js 安装完成但未找到 node.exe，请重启本应用后重试');
     return false;
   }
+  // 新装 Node：清除环境定位缓存，后续 findNodeExe/findNpmCli 用新路径
+  cachedNodeExe = null;
+  cachedNpmCli = null;
   logLine(`[环境] Node.js 安装完成：${nodeExe}`);
   return true;
 }
@@ -1224,6 +1310,7 @@ async function localInstall(nodeExe, npmCli) {
   // 未安装 / 入口缺失：npm install --prefix 装到本地固定目录（跳过 koffi 编译，与快速启动一致）
   setProgress(35, 'install', '未检测到本地运行环境，正在安装（首次需联网，之后可秒级启动）...',
     '正在安装 @deepseek-ai/dsh 到本地固定目录', '首次安装需从镜像下载依赖，请耐心等待');
+  notifyFirstInstall();
   const dir = localDshDir();
   fs.mkdirSync(dir, { recursive: true });
   const env = {
@@ -1476,15 +1563,17 @@ async function crashRetryWaitReady() {
       return;
     }
     const elapsed = Math.floor((Date.now() - bootStart) / 1000);
-    const pct = Math.min(60 + (elapsed / 600) * 35, 95);
+    // 从当前进度继续推进（不固定从 60 起步），与主流程 setProgress 一致
+    const base = bootProgressPercent >= 10 ? bootProgressPercent : 60;
+    const pct = Math.min(base + (elapsed / 600) * 35, 95);
     broadcast('boot:progress', {
-      percent: Math.round(pct),
+      percent: Math.round(Math.max(bootProgressPercent, pct)),
       stage: 'start',
       text: `正在重新启动服务，已等待 ${elapsed} 秒...`,
       detail: '首次需重新下载运行环境依赖，请耐心等待',
       step: resolveStep(pct),
     });
-    await new Promise((r) => setTimeout(r, 800));
+    await new Promise((r) => setTimeout(r, 300));
   }
   if (bootPhase !== 'running' && bootPhase !== 'error') {
     bootError('运行环境崩溃后重启超时，请查看下方日志排查问题。');
@@ -1903,6 +1992,8 @@ async function run() {
   currentSteps = (selectedMode === 'quick' && developerMode)
     ? MODE_STEPS.quickDev
     : (MODE_STEPS[selectedMode] || MODE_STEPS.quick);
+  // 重置进度：重新运行时清零，保证新进度从 0 单调递增到 100（见 setProgress）
+  resetProgress();
 
   // 0.1) 并发测速选择最快 npm 镜像（等待选出最快源后再安装，避免用默认源 npmjs.org 装不上；结果缓存，插件安装复用）
   //     离线启动模式若本地环境已就绪则跳过测速，保证完全离线时无需网络探测即可秒级启动
@@ -1943,7 +2034,10 @@ async function run() {
   }
   setProgress(18, 'detect', 'Node.js 环境正常');
 
-  const npmCli = await findNpmCli();
+  // 极速启动且本地环境已就绪：无需 npm（直接用 node 运行本地包入口），
+  // 跳过 findNpmCli 省去一次 which('npm') 子进程，进一步缩短启动时间。
+  const localEntryReady = selectedMode === 'local' && localDshEntry();
+  const npmCli = localEntryReady ? null : await findNpmCli();
 
   if (selectedMode === 'repair') {
     // ===== 本地修复（应急抢修）=====
@@ -1958,18 +2052,24 @@ async function run() {
     setProgress(82, 'start', '正在启动 DeepSeek Harness 服务（官方快速版）...');
     startWebViaNpx(nodeExe, npmCli);
   } else if (selectedMode === 'local') {
-    // ===== 离线启动（本地固定目录，不走 npm exec / registry）=====
+    // ===== 极速启动（本地固定目录，不走 npm exec / registry）=====
     // dsh 安装到 <userData>/dsh-local，启动直接用 node 运行本地包入口，
     // 不依赖网络解析，二次以后启动最快最稳（首次安装仍需联网一次）。
-    setProgress(20, 'detect', '准备极速启动环境...');
-    if (!npmCli) {
-      bootError('未检测到 npm，无法安装本地运行环境。请先安装 Node.js（含 npm）后重试。');
-      return;
+    if (localEntryReady) {
+      // 本地环境已就绪：跳过 localInstall 的重复检查，直接启动
+      setProgress(78, 'start', '正在启动本地 dsh 服务（极速模式）...');
+      localStartWeb(nodeExe, localEntryReady);
+    } else {
+      setProgress(20, 'detect', '准备极速启动环境...');
+      if (!npmCli) {
+        bootError('未检测到 npm，无法安装本地运行环境。请先安装 Node.js（含 npm）后重试。');
+        return;
+      }
+      const r = await localInstall(nodeExe, npmCli);
+      if (!r.ok) { bootError(r.error); return; }
+      setProgress(80, 'start', '正在启动本地 dsh 服务（极速模式）...');
+      localStartWeb(nodeExe, r.entry);
     }
-    const r = await localInstall(nodeExe, npmCli);
-    if (!r.ok) { bootError(r.error); return; }
-    setProgress(80, 'start', '正在启动本地 dsh 服务（极速模式）...');
-    localStartWeb(nodeExe, r.entry);
   } else if (selectedMode === 'source') {
     // ===== 源码完整安装 =====
     // 严格规范：git clone → pnpm install → pnpm run build → pnpm dsh web
@@ -2020,9 +2120,12 @@ async function run() {
   const bootStart = Date.now();
   const ready = await waitForWebReady(port, 10 * 60 * 1000, () => {
     const elapsed = Math.floor((Date.now() - bootStart) / 1000);
-    const pct = Math.min(60 + (elapsed / 600) * 35, 95);
+    // 从当前已到达的百分比继续推进（不固定从 60 起步），最高 95%，
+    // 最终 100% 由下方的 setProgress(100,'ready') 完成 —— 保证所有模式都能到 100%。
+    const base = bootProgressPercent >= 10 ? bootProgressPercent : 60;
+    const pct = Math.min(base + (elapsed / 600) * 35, 95);
     broadcast('boot:progress', {
-      percent: Math.round(pct),
+      percent: Math.round(Math.max(bootProgressPercent, pct)),
       stage: 'start',
       text: `正在启动服务，已等待 ${elapsed} 秒...`,
       detail: '首次启动需要初始化运行环境，请耐心等待',
@@ -2042,6 +2145,7 @@ async function run() {
 // WebUI 在独立的新窗口（mainWindow）中打开。
 function finishBoot() {
   bootPhase = 'running';
+  stopInstallTicker();
   // 服务成功启动：自动修复预算已达成使命，复位以保证下次故障仍有全额自愈能力
   crashRepairBudget = 1;
   cacheRepairBudget = 2;
@@ -2157,6 +2261,7 @@ async function updateLocalDsh() {
   }
   setProgress(35, 'install', '正在下载并安装最新版运行环境...',
     '正在更新 @deepseek-ai/dsh 到官方最新版', '更新完成后服务会自动重新启动，请耐心等待');
+  notifyFirstInstall();
   const env = {
     ...process.env,
     npm_config_ignore_scripts: 'true',
@@ -2188,6 +2293,44 @@ async function updateLocalDsh() {
   logLine('[更新] 本地运行环境更新完成，正在自动重新启动服务...');
   run();
   return { ok: true };
+}
+
+// 清除本地运行环境（极速启动固定目录 %APPDATA%\dsh-desktop\dsh-local）。
+// 设置页操作：停止服务 → 删除本地运行环境目录 → 返回结果与目录路径。
+// 清除后下次选择「极速启动」会重新联网安装。
+async function clearLocalRuntime() {
+  const dir = localDshDir();
+  logLine('[清除] 开始清除本地运行环境：' + dir);
+  try {
+    // 1) 停止当前服务（含残留端口进程、watcher），关闭 WebUI 窗口
+    if (bootPhase === 'running' || bootPhase === 'start' || bootPhase === 'install') {
+      await stopWebService();
+      await stopDevWebWatcher();
+      if (isWin) await killProcessOnPort(port);
+      onServiceExited();
+    }
+    // 2) 删除本地运行环境目录（含 node_modules 与入口）
+    if (fs.existsSync(dir)) {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+    }
+  } catch (e) {
+    logLine(`[清除] 停止服务或删除目录时出错：${e.message}`);
+    return {
+      ok: false,
+      dir,
+      exists: fs.existsSync(dir),
+      error: '清除本地运行环境失败，请先「停止运行」后再试。若仍失败，可手动删除目录：' + dir,
+    };
+  }
+  // 3) 清理相关状态：版本信息、更新提示、运行模式
+  serviceState.dshVersion = null;
+  serviceState.localUpdate = null;
+  serviceState.mode = null;
+  stopInstallTicker();
+  // 主动通知前端服务已停止（首页控制台从「正在运行」切回「已停止/选择模式」）
+  if (typeof broadcastServiceUpdate === 'function') broadcastServiceUpdate();
+  logLine('[清除] 本地运行环境已清除（' + dir + '）。下次选择「极速启动」会重新联网安装。');
+  return { ok: true, dir, exists: fs.existsSync(dir) };
 }
 
 // 显示 / 重建 WebUI 主窗口（运行中或重新运行后调用）
@@ -2310,8 +2453,9 @@ function createMainWindow() {
     if (url.startsWith('http')) shell.openExternal(url);
     return { action: 'deny' };
   });
-  // 关闭主窗口时：询问用户是退出 App 还是保存到托盘
-  let closeDialogOpen = false;
+  // 关闭主窗口时：弹原生确认框（响应快、零延迟），让用户选择
+  //   - 退出 Web 界面：关闭 WebUI 窗口，回到引导台（服务继续后台运行）
+  //   - 退出 APP：清理服务后完全退出
   mainWindow.on('close', (e) => {
     if (quitting) return; // 正在退出，直接关闭
     e.preventDefault();
@@ -2322,26 +2466,27 @@ function createMainWindow() {
       type: 'question',
       title: APP_NAME,
       message: '关闭窗口后要做什么？',
-      detail: '服务仍在后台运行，可随时从托盘恢复。',
-      buttons: ['保存到托盘', '退出 App'],
+      detail: '「退出 Web 界面」保留后台服务，可随时在引导台重新打开；「退出 APP」会结束所有后台服务。',
+      buttons: ['退出 Web 界面', '退出 APP'],
       defaultId: 0,
       cancelId: 1,
       icon: themedAppIcon(256),
     });
-
     closeDialogOpen = false;
+
     if (choice === 0) {
-      // 保存到托盘：隐藏窗口，服务继续运行
-      mainWindow.hide();
+      // 退出 Web 界面：关闭 WebUI 窗口，保留引导台与服务
+      mainWindow.destroy();
+      mainWindow = null;
       if (tray && tray.displayBalloon) {
         tray.displayBalloon({
           title: APP_NAME,
-          content: '已保存到系统托盘，服务继续在后台运行。',
+          content: '已退出 Web 界面，服务继续在后台运行。',
           icon: themedAppIcon(32),
         });
       }
     } else {
-      // 退出 App：清理服务后退出
+      // 退出 APP：清理服务后完全退出
       quitApp();
     }
   });
@@ -3290,12 +3435,28 @@ ipcMain.handle('dsh:version-info', async () => {
     latest,
     outdated: !!(running && latest && running !== latest),
     error,
+    // 极速启动本地运行环境：固定目录位置与是否已安装（设置页「清除」功能用）
+    localDir: localDshDir(),
+    localExists: !!localDshEntry(),
   };
 });
 
 // 离线启动模式：一键更新本地运行环境到最新版（停止服务 → 重装 → 自动重启）
 ipcMain.handle('dsh:update-local', async () => {
   return await updateLocalDsh();
+});
+
+// 清除本地运行环境（极速启动固定目录）：停止服务 → 删除目录 → 返回结果与路径
+ipcMain.handle('dsh:clear-local', async () => {
+  return await clearLocalRuntime();
+});
+
+// 本地运行环境信息（设置页即时展示路径，不查询网络，立即返回）
+ipcMain.handle('dsh:local-runtime-info', async () => {
+  return {
+    localDir: localDshDir(),
+    localExists: !!localDshEntry(),
+  };
 });
 
 ipcMain.handle('update:check', async () => {

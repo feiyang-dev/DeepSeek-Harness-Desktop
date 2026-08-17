@@ -139,19 +139,6 @@
           </div>
         </div>
 
-        <!-- 极速启动：运行原理说明（可展开） -->
-        <details class="mode-details" id="modeDetails">
-          <summary data-i18n="modeDetailsSummary">▸ 极速启动运行原理（为什么快？）</summary>
-          <div class="mode-details-body">
-            <p><strong data-i18n="modeDetailsQ1">为什么原「快速启动」很慢？</strong></p>
-            <p data-i18n="modeDetailsA1">原「快速启动」走的是 npm exec（npx）：dsh 官方包拆成了 150+ 个相互依赖的子包，每次启动 npm 都要对每一个子包逐个向 registry 发 HTTP 请求做版本校验（cache revalidated），即使本地已有缓存也要逐个校验并解压。这 150+ 个包的串行校验与解压，全部命中缓存也要 100~200 秒 —— 这就是「启动一个服务要 200 多秒」的根本原因，并不是网络慢，而是 npm 每次都在重复解析整棵依赖树。</p>
-            <p><strong data-i18n="modeDetailsQ2">极速启动是如何做到秒级启动的？</strong></p>
-            <p data-i18n="modeDetailsA2" data-i18n-html>极速启动把「安装」和「启动」彻底分离：首次联网执行 <code>npm install @deepseek-ai/dsh --prefix %APPDATA%\dsh-desktop\dsh-local --ignore-scripts</code>，把 dsh 及全部 150+ 依赖完整解压到本地固定目录，形成一棵已就绪的依赖树。之后每次启动直接用 Node.js 进程运行本地入口 <code>lib/bin.js</code> 启动 <code>dsh web</code> —— 全程没有 npm 参与：不解析 latest、不发任何 HTTP 请求、不校验 tarball、不解压依赖，Node 的 require 直接命中本地 node_modules，几秒内服务就绪，且完全离线可用。</p>
-            <p><strong data-i18n="modeDetailsQ3">如何保持官方最新版本？</strong></p>
-            <p data-i18n="modeDetailsA3">极速启动不追求每次启动都解析最新版，而是启动后（约 8 秒）后台静默查询官方最新版本：发现新版时首页运行状态栏显示「一键更新」，点击后自动「停止服务 → 重装本地环境到最新版 → 自动重启」，全程走国内镜像、失败自动切换。断网时跳过检查，完全不影响启动。</p>
-          </div>
-        </details>
-
         <p class="mode-hint" id="homeHint" data-i18n="homeHint">请选择一种启动模式，本页面不会自动进入</p>
       </div>
 
@@ -179,6 +166,13 @@
           <div class="stage-text" id="stageText">正在准备启动环境...</div>
           <div class="progress-detail" id="progressDetail"></div>
           <div class="progress-hint" id="progressHint"></div>
+
+          <!-- 首次安装 / 大文件下载提示（极速启动第一次安装时醒目展示） -->
+          <div class="first-install-tip" id="firstInstallTip" hidden>
+            <div class="first-install-title" data-i18n="firstInstallTitle">⏳ 首次安装运行环境</div>
+            <p class="first-install-text" data-i18n="firstInstallText">本机还未安装运行环境，正在从国内镜像下载依赖（约数百 MB）。首次安装通常需要 3~10 分钟，取决于你的网络速度。</p>
+            <p class="first-install-sub" data-i18n="firstInstallSub">请保持窗口打开并耐心等待，安装完成后会自动启动服务。进度条可能短暂停留，属正常现象。</p>
+          </div>
         </div>
 
         <div class="log-panel" id="logPanel">
@@ -186,6 +180,16 @@
             <span class="log-toggle" id="logToggle">▶</span>
             <span data-i18n="logTitle">命令行日志</span>
             <span class="log-badge" id="logBadge">0</span>
+          </div>
+          <div class="log-toolbar" id="logToolbar" hidden>
+            <label class="log-check" title="过滤 npm 依赖进度刷屏日志（npm http fetch / cache revalidated）">
+              <input type="checkbox" id="logFilterNpm" checked>
+              <span data-i18n="logFilterNpm">隐藏依赖下载进度</span>
+            </label>
+            <label class="log-check" title="暂停自动滚动到底部，便于向上查看报错">
+              <input type="checkbox" id="logPauseScroll">
+              <span data-i18n="logPauseScroll">暂停自动滚动</span>
+            </label>
           </div>
           <div class="log-body" id="logBody" hidden>
             <div class="log-hint" data-i18n="logWaiting">等待输出...</div>
@@ -427,6 +431,29 @@
               <button class="btn" id="setDshCheckBtn" data-i18n="setDshCheck">检查最新版本</button>
             </div>
             <div class="plugin-note" id="setDshVersionNote" hidden></div>
+
+            <!-- 极速启动：本地运行环境位置与清除 -->
+            <div class="settings-row local-runtime-row">
+              <div class="settings-row-text">
+                <div class="local-runtime-title" data-i18n="setLocalRuntimeTitle">本地运行环境</div>
+                <div class="workspace-hint" id="setLocalRuntimePath"></div>
+                <div class="settings-desc" data-i18n="setLocalRuntimeDesc">极速启动将 dsh 及依赖安装到此固定目录，用于秒级离线启动。清除后下次选择「极速启动」会重新联网安装（首次安装通常需 3~10 分钟）。</div>
+              </div>
+              <button class="btn btn-danger" id="setLocalClearBtn" data-i18n="setLocalClear">清除本地运行环境</button>
+            </div>
+
+            <!-- 极速启动：运行原理说明（可展开） -->
+            <details class="mode-details" id="modeDetails">
+              <summary data-i18n="modeDetailsSummary">查看详情 · 极速启动运行原理</summary>
+              <div class="mode-details-body">
+                <p><strong data-i18n="modeDetailsQ1">为什么原「快速启动」很慢？</strong></p>
+                <p data-i18n="modeDetailsA1">原「快速启动」走的是 npm exec（npx）：dsh 官方包拆成了 150+ 个相互依赖的子包，每次启动 npm 都要对每一个子包逐个向 registry 发 HTTP 请求做版本校验（cache revalidated），即使本地已有缓存也要逐个校验并解压。这 150+ 个包的串行校验与解压，全部命中缓存也要 100~200 秒 —— 这就是「启动一个服务要 200 多秒」的根本原因，并不是网络慢，而是 npm 每次都在重复解析整棵依赖树。</p>
+                <p><strong data-i18n="modeDetailsQ2">极速启动是如何做到秒级启动的？</strong></p>
+                <p data-i18n="modeDetailsA2" data-i18n-html>极速启动把「安装」和「启动」彻底分离：首次联网执行 <code>npm install @deepseek-ai/dsh --prefix %APPDATA%\dsh-desktop\dsh-local --ignore-scripts</code>，把 dsh 及全部 150+ 依赖完整解压到本地固定目录，形成一棵已就绪的依赖树。之后每次启动直接用 Node.js 进程运行本地入口 <code>lib/bin.js</code> 启动 <code>dsh web</code> —— 全程没有 npm 参与：不解析 latest、不发任何 HTTP 请求、不校验 tarball、不解压依赖，Node 的 require 直接命中本地 node_modules，几秒内服务就绪，且完全离线可用。</p>
+                <p><strong data-i18n="modeDetailsQ3">如何保持官方最新版本？</strong></p>
+                <p data-i18n="modeDetailsA3">极速启动不追求每次启动都解析最新版，而是启动后（约 8 秒）后台静默查询官方最新版本：发现新版时首页运行状态栏显示「一键更新」，点击后自动「停止服务 → 重装本地环境到最新版 → 自动重启」，全程走国内镜像、失败自动切换。断网时跳过检查，完全不影响启动。</p>
+              </div>
+            </details>
           </section>
 
           <!-- 检查更新 -->

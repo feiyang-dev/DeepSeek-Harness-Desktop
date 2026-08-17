@@ -102,7 +102,10 @@ contextBridge.exposeInMainWorld('dsh', {
   getDshVersionInfo: () => ipcRenderer.invoke('dsh:version-info'),
   // 离线启动模式：一键更新本地运行环境到最新版（停止服务 → 重装 → 自动重启）
   updateLocalDsh: () => ipcRenderer.invoke('dsh:update-local'),
-
+  // 清除本地运行环境（极速启动固定目录）：停止服务 → 删除目录
+  clearLocalRuntime: () => ipcRenderer.invoke('dsh:clear-local'),
+  // 本地运行环境信息（路径与是否已安装，即时返回不查网络）
+  getLocalRuntimeInfo: () => ipcRenderer.invoke('dsh:local-runtime-info'),
   // ---- 更新 ----
   // 检查更新（返回当前状态）
   checkUpdate: () => ipcRenderer.invoke('update:check'),
