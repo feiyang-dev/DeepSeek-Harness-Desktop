@@ -28,7 +28,7 @@ Choose an install method when the app launches:
 
 | Mode | Description | Best For |
 |---|---|---|
-| Quick Start | `npm install -g @deepseek-ai/dsh` (auto-updates to the latest official version on every start) | Most users, fastest path to start |
+| Instant Start | Local fixed-directory runtime, second-level launch, auto-checks official updates with one-click update (replaces Quick Start) | Most users, recommended |
 | Full Source Build | `git clone` + `pnpm install` + `pnpm run build` | Developers who want to modify/debug the source |
 | Local Repair | Uninstall global `@deepseek-ai/dsh`, clean residue, reinstall | Fix broken installs, version issues, or koffi load failures |
 
@@ -103,7 +103,7 @@ After enabling "Developer options mode", choosing "Quick Start" no longer runs a
 | Dependency | Notes |
 |---|---|
 | Windows 10 / 11 (x64) | Runtime platform |
-| Node.js ≥ 18 | Required for Quick Start mode; the client guides installation if missing |
+| Node.js ≥ 18 | Required for Instant Start mode; the client guides installation if missing |
 | git | Only needed for source mode (pnpm auto-installs if missing) |
 | Network | First install downloads dependencies (~hundreds of MB) |
 
@@ -167,8 +167,8 @@ dsh-desktop/
 
 Key implementation details:
 
-- Quick mode: `node <npm>/bin/npm-cli.js exec --yes -- @deepseek-ai/dsh web` with `npm_config_ignore_scripts=true` (skips koffi source compilation to avoid missing CMake failures, same as `start-web.bat`)
-- **Version policy**: `npm exec` resolves `latest` from the registry on every start (npx cache compares resolved tarballs and downloads new versions automatically), so the next Quick Start is always the latest official version; if the registry is unreachable, it falls back to `--prefer-offline` using the cached version so you can still start offline
+- Instant mode: `npm install @deepseek-ai/dsh --prefix <userData>/dsh-local` installs to a local fixed directory; startup runs `node <localDshDir>/lib/bin.js web` directly — **no npm exec, no dependency-tree resolution**, so launches are second-level and fully offline after the first install; first install uses the domestic mirror (npmmirror) with automatic fallback
+- **Version policy (Instant Start)**: a background check silently queries the latest official version after startup (8s delayed, does not compete for startup bandwidth); when a new version is found the home status bar shows a "Update Now" banner — click to auto "stop service → reinstall local runtime → auto restart". When offline the check is skipped and startup is unaffected
 - Source mode: repo cloned to `%APPDATA%/dsh-desktop/deepseek-harness` (keeps the workspace clean); `pnpm install --ignore-scripts` then `pnpm run build`; starts via `node --import tsx/esm apps/cli/src/bin.ts web`
 - All services start without going through `cmd.exe` — no terminal popups
 
@@ -190,7 +190,7 @@ A: Choose "Full Source Build" mode. The source is cloned to `%APPDATA%/dsh-deskt
 A: Enable "Developer options mode" in Settings (a "Full Source Build" must be done first), then choose "Quick Start". The client runs the "service backend" and the "browser-side hot-reload watcher (`pnpm dev:web`)" as two processes; the browser still opens on 3080. Changes to `dsh.client` plugin sources rebuild automatically and hot-reload without a refresh.
 
 **Q: How does the desktop app update when DeepSeek releases a new official version?**
-A: Nothing to do manually. Quick Start uses `npm exec` (npx): **it resolves the latest version from the registry on every start and downloads it automatically**, so after an official release the next "Quick Start" is automatically the new version. The home screen shows the current dsh version (e.g. `dsh v0.1.0-rc.6`); Settings → "Runtime (dsh)" can compare "current version vs latest version" with one click. If you're offline at startup, the client falls back to the cached version and recovers to the latest on the next online start.
+A: Instant Start **auto-checks for updates in the background**: after startup it silently queries the latest official version, and when a new version is found the home status bar shows a "Update Now" banner — click to auto "stop service → reinstall the local runtime to the latest → auto restart", all through the domestic mirror with automatic fallback. The home screen shows the current dsh version; Settings → "Runtime (dsh)" can compare "current version vs latest version" with one click. When offline the check is skipped and startup is unaffected.
 
 **Q: Is "Local Repair" still available in Developer Options mode?**
 A: Yes. "Local Repair" always runs the official quick-start npx single process and is unaffected by Developer Options (repair also cleans up any leftover watcher processes).

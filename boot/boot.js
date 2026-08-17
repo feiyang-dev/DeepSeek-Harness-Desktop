@@ -15,6 +15,7 @@ const homeHint = document.getElementById('homeHint');
 const modeCards = document.getElementById('modeCards');
 const cardQuick = document.getElementById('cardQuick');
 const cardSource = document.getElementById('cardSource');
+const cardLocal = document.getElementById('cardLocal');
 const cardRepair = document.getElementById('cardRepair');
 
 // 首页运行状态控制台
@@ -25,6 +26,9 @@ const statusDesc = document.getElementById('statusDesc');
 const btnOpenMain = document.getElementById('btnOpenMain');
 const btnStopService = document.getElementById('btnStopService');
 const btnRestartService = document.getElementById('btnRestartService');
+const statusUpdate = document.getElementById('statusUpdate');
+const statusUpdateText = document.getElementById('statusUpdateText');
+const btnUpdateLocal = document.getElementById('btnUpdateLocal');
 
 const percentEl = document.getElementById('percent');
 const barFillEl = document.getElementById('barFill');
@@ -117,6 +121,10 @@ const sidebarThemeText = document.getElementById('sidebarThemeText');
 const sidebarRepo = document.getElementById('sidebarRepo');
 const sidebarRepoText = document.getElementById('sidebarRepoText');
 const setDevModeToggle = document.getElementById('setDevModeToggle');
+const setWorkspaceInput = document.getElementById('setWorkspaceInput');
+const setWorkspaceSaveBtn = document.getElementById('setWorkspaceSaveBtn');
+const setWorkspaceDetectBtn = document.getElementById('setWorkspaceDetectBtn');
+const setWorkspaceHint = document.getElementById('setWorkspaceHint');
 const setDshVersion = document.getElementById('setDshVersion');
 const setDshCheckBtn = document.getElementById('setDshCheckBtn');
 const setDshVersionNote = document.getElementById('setDshVersionNote');
@@ -131,11 +139,22 @@ const setDownloadBtnText = document.getElementById('setDownloadBtnText');
 const setDownloadProgress = document.getElementById('setDownloadProgress');
 const setDownloadFill = document.getElementById('setDownloadFill');
 const setDownloadText = document.getElementById('setDownloadText');
+// 查看日志
+const setLogPath = document.getElementById('setLogPath');
+const setLogView = document.getElementById('setLogView');
+const setLogRefreshBtn = document.getElementById('setLogRefreshBtn');
+const setLogFileBtn = document.getElementById('setLogFileBtn');
+const setLogFolderBtn = document.getElementById('setLogFolderBtn');
 
 // preload.js 通过 contextBridge.exposeInMainWorld('dsh', ...) 暴露全局 window.dsh。
 let logCount = 0;
 let logOpen = false;
 let modeChosen = false;
+// 主进程当前阶段：mode / detect / install / start / ready / running / stopped / error。
+// 用于侧栏「首页」导航恢复正确界面（启动中回进度页，而非残留不可点的模式卡片）。
+let currentPhase = 'mode';
+// 最近一次 running 状态的服务信息（首页「正在运行中」控制台展示用）
+let lastService = null;
 let pluginBusy = false;
 let pluginUpdateCheck = null; // 最近一次插件更新检查结果：{ [pkg]: { latest, outdated, legacyMigrate, error } }
 let uptimeTimer = null;
@@ -201,6 +220,32 @@ function showScreen(name) {
   if (name !== 'home') stopUptimeTicker();
 }
 
+// 点击侧栏「首页」：根据主进程当前阶段恢复正确界面。
+// 修复：启动过程中离开首页再回来时，若直接 showScreen('home') 会残留不可点击的
+// 模式卡片（chooseMode 已置 disabled 且 modeChosen=true），这里按 currentPhase
+// 统一路由 —— 启动中回到进度页、运行中/已停止回到控制台、mode 才回到模式选择。
+function openHomePage() {
+  if (currentPhase === 'detect' || currentPhase === 'install' || currentPhase === 'start' ||
+      currentPhase === 'ready' || currentPhase === 'init' || currentPhase === 'error') {
+    // 启动进行中 / 已出错：回到进度页继续查看进度或错误信息
+    showScreen('progress');
+    return;
+  }
+  if (currentPhase === 'running') {
+    renderHome('running', lastService);
+    showScreen('home');
+    return;
+  }
+  if (currentPhase === 'stopped') {
+    renderHome('stopped');
+    showScreen('home');
+    return;
+  }
+  // mode 或未知阶段：回到模式选择（renderHome 内部会重置卡片为可点击状态）
+  renderHome('mode');
+  showScreen('home');
+}
+
 // 高亮侧栏当前项
 function syncNavActive(name) {
   const map = { home: navHome, plugin: navPlugin, market: navMarket, settings: navSettings };
@@ -218,8 +263,10 @@ function setSidebarStatus(running) {
 // ============ 首页渲染（模式选择 / 运行中 / 已停止） ============
 function resetModeCards() {
   modeChosen = false;
-  cardQuick.classList.remove('selected', 'disabled');
+  // 快速启动已合并进离线启动，卡片已移除，cardQuick 可能为 null，加守卫防空引用
+  if (cardQuick) cardQuick.classList.remove('selected', 'disabled');
   cardSource.classList.remove('selected', 'disabled');
+  cardLocal.classList.remove('selected', 'disabled');
   cardRepair.classList.remove('selected', 'disabled');
 }
 
@@ -250,6 +297,21 @@ function startUptimeTicker(service) {
   uptimeTimer = setInterval(tick, 5000);
 }
 
+// 运行状态栏：极速模式检测到官方新版时显示「一键更新」横幅
+function showStatusUpdate(service) {
+  if (!statusUpdate || !statusUpdateText) return;
+  const upd = service && service.localUpdate;
+  if (upd && upd.latest) {
+    statusUpdate.hidden = false;
+    statusUpdateText.textContent = (currentLanguage === 'en'
+      ? 'Official dsh v' + upd.latest + ' available (current v' + (upd.current || '-') + ')'
+      : '发现官方新版 dsh v' + upd.latest + '（当前 v' + (upd.current || '-') + '）');
+    if (btnUpdateLocal) btnUpdateLocal.disabled = false;
+  } else {
+    statusUpdate.hidden = true;
+  }
+}
+
 // phase: 'mode' | 'running' | 'stopped'
 function renderHome(phase, service) {
   resetModeCards();
@@ -266,6 +328,7 @@ function renderHome(phase, service) {
     btnRestartService.hidden = false;
     setSidebarStatus(true);
     startUptimeTicker(service);
+    showStatusUpdate(service);
   } else if (phase === 'stopped') {
     homeSubtitle.textContent = currentLanguage === 'en' ? 'Service stopped' : '服务已停止';
     homeHint.textContent = currentLanguage === 'en' ? 'Restart it, or choose another launch mode' : '可重新运行，或选择其他启动模式';
@@ -280,6 +343,7 @@ function renderHome(phase, service) {
     btnRestartService.hidden = false;
     setSidebarStatus(false);
     stopUptimeTicker();
+    showStatusUpdate(null);
   } else {
     // mode：选择启动模式
     homeSubtitle.textContent = currentLanguage === 'en' ? 'Choose a launch mode to get started' : '选择启动模式，开始使用';
@@ -289,6 +353,7 @@ function renderHome(phase, service) {
     statusPanel.hidden = true;
     setSidebarStatus(false);
     stopUptimeTicker();
+    showStatusUpdate(null);
   }
 }
 
@@ -296,26 +361,53 @@ function renderHome(phase, service) {
 function chooseMode(mode) {
   if (modeChosen) return;
   modeChosen = true;
-  cardQuick.classList.add('disabled');
+  if (cardQuick) cardQuick.classList.add('disabled');
   cardSource.classList.add('disabled');
+  cardLocal.classList.add('disabled');
   cardRepair.classList.add('disabled');
-  if (mode === 'quick') cardQuick.classList.add('selected');
+  if (mode === 'quick') { if (cardQuick) cardQuick.classList.add('selected'); }
   else if (mode === 'source') cardSource.classList.add('selected');
+  else if (mode === 'local') cardLocal.classList.add('selected');
   else if (mode === 'repair') cardRepair.classList.add('selected');
   showScreen('progress');
   setPercent(0);
   window.dsh && window.dsh.selectMode(mode);
 }
 
-cardQuick.addEventListener('click', () => chooseMode('quick'));
+if (cardQuick) cardQuick.addEventListener('click', () => chooseMode('quick'));
 cardSource.addEventListener('click', () => chooseMode('source'));
+cardLocal.addEventListener('click', () => chooseMode('local'));
 cardRepair.addEventListener('click', () => chooseMode('repair'));
-cardQuick.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') chooseMode('quick'); });
+if (cardQuick) cardQuick.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') chooseMode('quick'); });
 cardSource.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') chooseMode('source'); });
+cardLocal.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') chooseMode('local'); });
 cardRepair.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') chooseMode('repair'); });
 
 // ============ 服务控制（首页控制台） ============
 btnOpenMain.addEventListener('click', () => { if (window.dsh) window.dsh.showMain(); });
+
+// 一键更新本地运行环境（极速模式检测到新版时点击）：停止 → 重装 → 自动重启
+btnUpdateLocal.addEventListener('click', () => {
+  if (!window.dsh || !window.dsh.updateLocalDsh) return;
+  if (!window.confirm(currentLanguage === 'en'
+    ? 'Update the local dsh runtime to the latest version? The service will restart automatically.'
+    : '确定要将本地运行环境更新到官方最新版吗？服务会自动重启。')) return;
+  btnUpdateLocal.disabled = true;
+  btnUpdateLocal.textContent = currentLanguage === 'en' ? 'Updating...' : '更新中...';
+  showScreen('progress');
+  setPercent(0);
+  setIcon('');
+  stageTextEl.textContent = currentLanguage === 'en' ? 'Updating local runtime...' : '正在更新本地运行环境...';
+  stageTagEl.textContent = STAGE_LABELS.install();
+  footer.hidden = true;
+  errorTip.hidden = true;
+  window.dsh.updateLocalDsh().then(() => {
+    // 更新完成后主进程会走 run() 重启流程，进度事件会自动接管界面
+  }).catch(() => {
+    btnUpdateLocal.disabled = false;
+    btnUpdateLocal.textContent = t('btnUpdateLocal');
+  });
+});
 
 btnStopService.addEventListener('click', () => {
   if (!window.dsh) return;
@@ -541,7 +633,7 @@ function loadPluginStatus() {
       list = st.list;
     } else if (st && st.ok) {
       list = [{
-        pkg: '@feiyang666/deepseekharnessdesktop',
+        pkg: '@feiyang666/dsh-usage-plugin',
         title: '用量与消耗插件',
         desc: '用量统计 / 余额查询 / 导出报表',
         installed: st.installed,
@@ -701,7 +793,7 @@ function checkPluginUpdates() {
   });
 }
 
-// 安装推荐插件（pkg 缺省为 @feiyang666/deepseekharnessdesktop）
+// 安装推荐插件（pkg 缺省为 @feiyang666/dsh-usage-plugin）
 function doPluginInstall(pkg) {
   if (!window.dsh || !window.dsh.installPlugin) return;
   if (opFor({ pkg })) return; // 该插件已在安装/卸载中，忽略重复点击
@@ -1046,7 +1138,7 @@ marketNextBtn.addEventListener('click', () => {
 });
 
 // ============ 侧栏导航 ============
-navHome.addEventListener('click', () => showScreen('home'));
+navHome.addEventListener('click', openHomePage);
 navPlugin.addEventListener('click', openPluginPage);
 navMarket.addEventListener('click', openMarketPage);
 navSettings.addEventListener('click', openSettings);
@@ -1056,10 +1148,58 @@ function openSettings() {
   showScreen('settings');
   loadSettings();
   loadDshVersionInfo();
+  loadLogs();
   // 进入设置页自动检查更新
   if (window.dsh && window.dsh.checkUpdate) {
     window.dsh.checkUpdate();
   }
+}
+
+// 查看日志：加载当前日志文件尾部内容并展示日志路径
+function loadLogs() {
+  if (!window.dsh || !window.dsh.getLogs) return;
+  if (setLogView) setLogView.innerHTML = '<div class="log-hint">' + t('logWaiting') + '</div>';
+  window.dsh.getLogs().then((r) => {
+    if (!r || !r.ok) {
+      if (setLogView) {
+        setLogView.innerHTML = '<div class="log-line err">' + t('setLogLoadFail') + ((r && r.error) ? '：' + r.error : '') + '</div>';
+      }
+      return;
+    }
+    if (setLogPath) setLogPath.textContent = r.file || '';
+    if (setLogView) {
+      const lines = String(r.content || '').split('\n').filter((ln, i, arr) => !(ln === '' && i === arr.length - 1));
+      setLogView.innerHTML = '';
+      if (lines.length === 0) {
+        const hint = document.createElement('div');
+        hint.className = 'log-hint';
+        hint.textContent = t('setLogEmpty');
+        setLogView.appendChild(hint);
+      } else {
+        for (const ln of lines) {
+          const div = document.createElement('div');
+          div.className = 'log-line' + (/错误|失败|Error|error/.test(ln) ? ' err' : '');
+          div.textContent = ln;
+          setLogView.appendChild(div);
+        }
+      }
+      setLogView.scrollTop = setLogView.scrollHeight;
+    }
+  }).catch(() => {
+    if (setLogView) setLogView.innerHTML = '<div class="log-line err">' + t('setLogLoadFail') + '</div>';
+  });
+}
+
+if (setLogRefreshBtn) setLogRefreshBtn.addEventListener('click', loadLogs);
+if (setLogFileBtn) {
+  setLogFileBtn.addEventListener('click', () => {
+    if (window.dsh && window.dsh.openLogFile) window.dsh.openLogFile();
+  });
+}
+if (setLogFolderBtn) {
+  setLogFolderBtn.addEventListener('click', () => {
+    if (window.dsh && window.dsh.openLogFolder) window.dsh.openLogFolder();
+  });
 }
 
 // ============ 界面语言（中文 / English） ============
@@ -1101,6 +1241,13 @@ const I18N = {
     modeSourceF2: 'pnpm install + pnpm run build',
     modeSourceF3: '需要 git，pnpm 自动安装',
     modeSourceBtn: '选择源码安装',
+    modeLocalTitle: '极速启动',
+    modeLocalDesc: '本地运行秒级启动，后台自动检查更新，最稳最快',
+    modeLocalF1: '本地固定目录，启动不走 npm，秒级启动',
+    modeLocalF2: '后台自动检查官方新版本，一键更新',
+    modeLocalF3: '无需联网即可启动，断网也能用',
+    modeLocalBtn: '选择极速启动',
+    btnUpdateLocal: '一键更新',
     modeRepairTitle: '本地修复',
     modeRepairDesc: '应急抢修：强力清除本地数据后快速启动',
     modeRepairF1: '强力清除 ~/.dsh 全部本地数据',
@@ -1140,14 +1287,23 @@ const I18N = {
     themeDark: '深色',
     themeLight: '浅色',
     themeSystem: '跟随系统',
+    setWorkspaceTitle: '工作目录',
+    setWorkspaceLabel: 'dsh 工作目录',
+    setWorkspaceDesc: '聊天记录与工作区数据按工作目录保存。默认自动检测最近使用的目录；如读不到历史数据，可在此手动指定。',
+    setWorkspaceSave: '保存',
+    setWorkspaceDetect: '自动检测',
+    workspaceCurrent: '当前：',
+    workspaceAutoDetected: '（自动检测）',
+    workspaceSaved: '已保存，重启服务后生效',
+    workspaceInvalid: '目录不存在或不可访问',
     setNotifications: '通知',
     setNotifyTitle: '新版本通知',
     setNotifyDesc: '发现新版本时弹出系统通知提醒',
     setDevTitle: '开发者选项',
     setDevModeTitle: '开启开发者选项模式',
-    setDevModeDesc: '选择「快速启动」时分离运行「服务端后端」与「浏览器端热更 watcher（pnpm dev:web）」两个进程，改动客户端插件源码后自动重建并热更。需先完成一次「源码完整安装」，开关对下次启动生效。',
+    setDevModeDesc: '选择「源码完整安装」时分离运行「服务端后端」与「浏览器端热更 watcher（pnpm dev:web）」两个进程，改动客户端插件源码后自动重建并热更。需先完成一次「源码完整安装」，开关对下次启动生效。',
     setRuntimeTitle: '运行环境（dsh）',
-    setRuntimeDesc: '快速启动使用 npm exec（npx）方式：每次启动都会自动解析并更新到官方 registry 的最新版本',
+    setRuntimeDesc: '极速启动：本地运行秒级启动；后台自动检查官方新版本，发现新版可在运行状态栏一键更新',
     setDshCheck: '检查最新版本',
     setUpdateTitle: '检查更新',
     setCheckNow: '立即检查',
@@ -1189,6 +1345,12 @@ const I18N = {
     setDownloadingBtn: '下载中...',
     setNoChangelog: '暂无更新日志',
     setCurrentVersion: '当前版本：',
+    setLogTitle: '查看日志',
+    setLogDesc: '查看应用运行日志，便于排查启动、插件与服务问题。日志按天保存在以下文件：',
+    setLogOpenFile: '打开日志文件',
+    setLogOpenFolder: '打开日志目录',
+    setLogEmpty: '暂无日志',
+    setLogLoadFail: '日志读取失败',
   },
   en: {
     navHome: 'Home',
@@ -1223,6 +1385,13 @@ const I18N = {
     modeSourceF2: 'pnpm install + pnpm run build',
     modeSourceF3: 'Requires git; pnpm auto-installs',
     modeSourceBtn: 'Choose Source Build',
+    modeLocalTitle: 'Instant Start',
+    modeLocalDesc: 'Instant launch from a local runtime, auto-checks updates in the background — most stable & fastest',
+    modeLocalF1: 'Local fixed directory, no npm at startup — instant launch',
+    modeLocalF2: 'Auto-checks official new versions, one-click update',
+    modeLocalF3: 'Works even without network — fully offline capable',
+    modeLocalBtn: 'Choose Instant Start',
+    btnUpdateLocal: 'Update Now',
     modeRepairTitle: 'Local Repair',
     modeRepairDesc: 'Emergency repair: force-clear local data then quick start',
     modeRepairF1: 'Force-clear all ~/.dsh local data',
@@ -1262,14 +1431,23 @@ const I18N = {
     themeDark: 'Dark',
     themeLight: 'Light',
     themeSystem: 'Follow System',
+    setWorkspaceTitle: 'Workspace',
+    setWorkspaceLabel: 'dsh Workspace Directory',
+    setWorkspaceDesc: 'Chat history and workspace data are stored per workspace directory. Auto-detects the most recent directory by default; specify one manually if history is missing.',
+    setWorkspaceSave: 'Save',
+    setWorkspaceDetect: 'Auto-detect',
+    workspaceCurrent: 'Current: ',
+    workspaceAutoDetected: ' (auto-detected)',
+    workspaceSaved: 'Saved; takes effect after restart',
+    workspaceInvalid: 'Directory does not exist or is inaccessible',
     setNotifications: 'Notifications',
     setNotifyTitle: 'New version notification',
     setNotifyDesc: 'Show a system notification when a new version is found',
     setDevTitle: 'Developer Options',
     setDevModeTitle: 'Enable developer options mode',
-    setDevModeDesc: 'When choosing "Quick Start", runs "service backend" and "browser hot-reload watcher (pnpm dev:web)" as two processes; changes to client plugin sources rebuild and hot-reload automatically. A "Full Source Build" must be done first. Applies on next launch.',
+    setDevModeDesc: 'When choosing "Full Source Build", runs "service backend" and "browser hot-reload watcher (pnpm dev:web)" as two processes; changes to client plugin sources rebuild and hot-reload automatically. A "Full Source Build" must be done first. Applies on next launch.',
     setRuntimeTitle: 'Runtime (dsh)',
-    setRuntimeDesc: 'Quick Start uses npm exec (npx): resolves and updates to the latest official registry version on every start',
+    setRuntimeDesc: 'Instant Start: instant launch from a local runtime; auto-checks official new versions in the background — update with one click when available',
     setDshCheck: 'Check Latest Version',
     setUpdateTitle: 'Check for Updates',
     setCheckNow: 'Check Now',
@@ -1311,6 +1489,12 @@ const I18N = {
     setDownloadingBtn: 'Downloading...',
     setNoChangelog: 'No changelog available',
     setCurrentVersion: 'Current version: ',
+    setLogTitle: 'View Logs',
+    setLogDesc: 'View application run logs to troubleshoot startup, plugin and service issues. Logs are saved per day at:',
+    setLogOpenFile: 'Open Log File',
+    setLogOpenFolder: 'Open Log Folder',
+    setLogEmpty: 'No logs yet',
+    setLogLoadFail: 'Failed to load logs',
   },
 };
 
@@ -1457,6 +1641,10 @@ function loadSettings() {
       if (cfg.language) {
         currentLanguage = cfg.language === 'en' ? 'en' : 'zh';
       }
+      // 工作目录：回填输入框并展示当前目录与自动检测结果
+      if (cfg.workspaceDir) {
+        renderWorkspace(cfg.workspaceDir, cfg.detectedWorkspace);
+      }
       if (cfg.repoUrl && sidebarRepo) {
         sidebarRepo.href = cfg.repoUrl;
       }
@@ -1471,6 +1659,46 @@ function loadSettings() {
     setVersion.textContent = 'v1.0.0';
   });
 }
+
+// 工作目录：回填输入框并展示当前目录与自动检测到的历史目录
+function renderWorkspace(currentDir, detectedDir) {
+  if (setWorkspaceInput) setWorkspaceInput.value = currentDir || '';
+  if (setWorkspaceHint) {
+    let text = t('workspaceCurrent') + (currentDir || '-');
+    if (detectedDir && detectedDir !== currentDir) {
+      text += ' · ' + (currentLanguage === 'en' ? 'Detected: ' : '检测到：') + detectedDir;
+    }
+    setWorkspaceHint.textContent = text;
+  }
+}
+
+// 保存手动填写的工作目录（主进程校验存在性，重启服务后生效）
+function saveWorkspaceDir() {
+  if (!window.dsh || !window.dsh.setWorkspaceDir) return;
+  const dir = setWorkspaceInput ? setWorkspaceInput.value.trim() : '';
+  window.dsh.setWorkspaceDir(dir).then((r) => {
+    if (r && r.ok) {
+      renderWorkspace(r.workspaceDir, null);
+      if (setWorkspaceHint) setWorkspaceHint.textContent = t('workspaceCurrent') + r.workspaceDir + ' · ' + t('workspaceSaved');
+    } else if (r && r.error) {
+      if (setWorkspaceHint) setWorkspaceHint.textContent = t('workspaceInvalid') + '：' + r.error;
+    }
+  }).catch(() => {});
+}
+
+// 自动检测：清除显式配置，恢复「按历史数据自动检测」
+function detectWorkspaceDir() {
+  if (!window.dsh || !window.dsh.setWorkspaceDir) return;
+  window.dsh.setWorkspaceDir('').then((r) => {
+    if (r && r.ok) {
+      renderWorkspace(r.workspaceDir, null);
+      if (setWorkspaceHint) setWorkspaceHint.textContent = t('workspaceCurrent') + r.workspaceDir + t('workspaceAutoDetected');
+    }
+  }).catch(() => {});
+}
+
+if (setWorkspaceSaveBtn) setWorkspaceSaveBtn.addEventListener('click', saveWorkspaceDir);
+if (setWorkspaceDetectBtn) setWorkspaceDetectBtn.addEventListener('click', detectWorkspaceDir);
 
 setNotifyToggle.addEventListener('change', () => {
   if (window.dsh && window.dsh.setNotifications) {
@@ -1508,7 +1736,7 @@ function loadDshVersionInfo() {
     if (info.latest) parts.push((currentLanguage === 'en' ? 'Latest v' : '最新版本 v') + info.latest);
     setDshVersion.textContent = parts.length > 0 ? parts.join(' · ') : t('setCurrentVersion') + '-';
     if (info.outdated) {
-      showDshNote(currentLanguage === 'en' ? 'New version found: stop the service, choose "Quick Start" again, and npx will download and use the latest version automatically' : '发现新版本：停止运行后重新选择「快速启动」，npx 会自动下载并使用最新版', '');
+      showDshNote(currentLanguage === 'en' ? 'New version found: click "Update Now" on the home running status bar to update in one click' : '发现新版本：回到首页运行状态栏点击「一键更新」即可更新', '');
     } else if (info.running && info.latest) {
       showDshNote(currentLanguage === 'en' ? 'Already up to date' : '已是最新版本', 'ok');
     } else {
@@ -1806,6 +2034,8 @@ if (!window.dsh) {
 
   // 阶段切换（mode / detect / install / start / running / stopped / error）
   window.dsh.onPhase(({ phase, service }) => {
+    currentPhase = phase;
+    if (phase === 'running' && service) lastService = service;
     if (phase === 'mode') {
       // 回到首页模式选择（重试时）
       logCount = 0;
@@ -1828,6 +2058,10 @@ if (!window.dsh) {
 
   // 进度事件（含实时细节 detail 与人性化提示 hint、步骤 step）
   window.dsh.onProgress(({ percent, stage, text, detail, hint, step }) => {
+    // 记录当前阶段：启动过程中主进程只广播 boot:progress，首页导航靠它恢复正确界面
+    if (stage === 'detect' || stage === 'install' || stage === 'start' || stage === 'ready') {
+      currentPhase = stage;
+    }
     // 防御：新的进度事件到达时，清除之前残留的错误提示（避免"假失败"残留）
     if (stage !== 'error') {
       errorTip.hidden = true;
@@ -1835,7 +2069,7 @@ if (!window.dsh) {
     }
     setPercent(percent);
     if (text) stageTextEl.textContent = text;
-    if (stage && STAGE_LABELS[stage]) stageTagEl.textContent = STAGE_LABELS[stage];
+    if (stage && STAGE_LABELS[stage]) stageTagEl.textContent = STAGE_LABELS[stage]();
     if (stage === 'ready') setIcon('ok');
     if (detail) progressDetailEl.textContent = detail;
     else progressDetailEl.textContent = '';
@@ -1852,8 +2086,9 @@ if (!window.dsh) {
   window.dsh.onLog((text) => appendLog(text));
 
   // 错误状态：提示用户选择修复
-  window.dsh.onStatus(({ phase, message }) => {
+  window.dsh.onStatus(({ phase, message, crashCode }) => {
     if (phase === 'error') {
+      currentPhase = 'error';
       stopUptimeTicker();
       showScreen('progress'); // 无论当前在哪个页面，都切回进度页展示错误
       stageTagEl.textContent = STAGE_LABELS.error();
@@ -1861,12 +2096,20 @@ if (!window.dsh) {
       setIcon('err');
       footer.hidden = false;
       btnOpenNode.hidden = false;
-      btnRepair.hidden = false;
       btnRetry.hidden = false;
       errorTip.hidden = false;
-      errorTipText.textContent = message
-        ? `启动失败：${message}\n建议点击「选择本地修复」，强力清除本地数据后重新启动。`
-        : '启动失败。可点击「选择本地修复」强力清除本地数据后重新启动。';
+      if (crashCode != null) {
+        // 原生模块崩溃（0xC0000005 等）：本地修复（清 profiles）对该类型无效，
+        // 隐藏「选择本地修复」并给出针对性建议（清理缓存 / 换 LTS / 源码重建）
+        btnRepair.hidden = true;
+        const hex = '0x' + (Number(crashCode) >>> 0).toString(16).toUpperCase().padStart(8, '0');
+        errorTipText.textContent = `检测到运行环境原生模块崩溃（${hex}）。\n已自动尝试清理损坏缓存并重新下载运行环境。若仍失败：\n① 点击「重新开始」再次自动修复；\n② 点击「前往 nodejs.org 下载」安装 Node.js LTS 稳定版后重试；\n③ 或选择「源码完整安装」由官方构建流程重新安装依赖。`;
+      } else {
+        btnRepair.hidden = false;
+        errorTipText.textContent = message
+          ? `启动失败：${message}\n建议点击「选择本地修复」，强力清除本地数据后重新启动。`
+          : '启动失败。可点击「选择本地修复」强力清除本地数据后重新启动。';
+      }
       if (!logOpen) toggleLog();
     }
   });
@@ -1935,15 +2178,20 @@ if (!window.dsh) {
   if (window.dsh.getServiceState) {
     window.dsh.getServiceState().then((st) => {
       if (!st) return;
+      currentPhase = st.phase || 'mode';
       if (st.phase === 'running' && st.running) {
+        lastService = st;
         renderHome('running', st);
         showScreen('home');
       } else if (st.phase === 'stopped') {
         renderHome('stopped');
         showScreen('home');
-      } else {
+      } else if (st.phase === 'mode' || st.phase === 'init') {
         renderHome('mode');
         showScreen('home');
+      } else {
+        // detect/install/start/ready/error：服务仍在启动中（如页面重载），回到进度页
+        showScreen('progress');
       }
     }).catch(() => {
       renderHome('mode');

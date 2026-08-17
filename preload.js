@@ -80,6 +80,8 @@ contextBridge.exposeInMainWorld('dsh', {
   setNotifications: (enabled) => ipcRenderer.invoke('settings:set-notifications', enabled),
   // 界面主题切换（'dark' | 'light' | 'system'），持久化保存并同步官方 WebUI
   setTheme: (theme) => ipcRenderer.invoke('settings:set-theme', theme),
+  // dsh 工作目录（决定会话/工作区数据归属，重启服务后生效；传空字符串恢复自动检测）
+  setWorkspaceDir: (dir) => ipcRenderer.invoke('settings:set-workspace-dir', dir),
   // 界面语言切换（'zh' | 'en'），持久化保存
   setLanguage: (language) => ipcRenderer.invoke('settings:set-language', language),
   // 主题变化事件（主进程推送：控制面板 / 官方 UI / 系统深浅色变化时触发）
@@ -90,8 +92,16 @@ contextBridge.exposeInMainWorld('dsh', {
   },
   // 开发者选项模式开关（对下次启动生效）
   setDeveloperMode: (enabled) => ipcRenderer.invoke('settings:set-developer-mode', enabled),
+  // 查看日志：读取最近日志内容（{ ok, content, file, logDir }）
+  getLogs: () => ipcRenderer.invoke('settings:get-logs'),
+  // 打开日志文件（系统默认文本编辑器）
+  openLogFile: () => ipcRenderer.invoke('settings:open-log-file'),
+  // 打开日志目录（系统文件管理器）
+  openLogFolder: () => ipcRenderer.invoke('settings:open-log-folder'),
   // dsh 运行环境版本信息（当前运行版本 + registry 最新版本）
   getDshVersionInfo: () => ipcRenderer.invoke('dsh:version-info'),
+  // 离线启动模式：一键更新本地运行环境到最新版（停止服务 → 重装 → 自动重启）
+  updateLocalDsh: () => ipcRenderer.invoke('dsh:update-local'),
 
   // ---- 更新 ----
   // 检查更新（返回当前状态）
@@ -114,7 +124,7 @@ contextBridge.exposeInMainWorld('dsh', {
   listPlugins: () => ipcRenderer.invoke('plugin:list'),
   // 检测已安装插件的更新（对比 npm registry 最新版本）
   checkPluginUpdates: () => ipcRenderer.invoke('plugin:check-updates'),
-  // 一键安装推荐插件（pkg 缺省为 @feiyang666/deepseekharnessdesktop）
+  // 一键安装推荐插件（pkg 缺省为 @feiyang666/dsh-usage-plugin）
   installPlugin: (pkg) => ipcRenderer.invoke('plugin:install', { pkg: pkg || null }),
   // 自定义包名 / 安装命令安装插件
   installCustomPlugin: (pkg) => ipcRenderer.invoke('plugin:install-custom', { pkg }),

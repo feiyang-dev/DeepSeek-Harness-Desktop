@@ -89,6 +89,13 @@
               <div class="status-desc" id="statusDesc"></div>
             </div>
           </div>
+          <div class="status-update" id="statusUpdate" hidden>
+            <span class="status-update-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 5H9l-7 7 7 7h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z"/><line x1="18" y1="9" x2="12" y2="15"/><line x1="12" y1="9" x2="18" y2="15"/></svg>
+            </span>
+            <span class="status-update-text" id="statusUpdateText"></span>
+            <button class="btn btn-sm btn-primary" id="btnUpdateLocal" data-i18n="btnUpdateLocal">一键更新</button>
+          </div>
           <div class="status-actions" id="statusActions">
             <button class="btn btn-primary" id="btnOpenMain" data-i18n="btnOpenMain">打开主界面</button>
             <button class="btn btn-danger" id="btnStopService" data-i18n="btnStopService">停止运行</button>
@@ -97,16 +104,16 @@
         </div>
 
         <div class="mode-cards" id="modeCards">
-          <div class="mode-card" id="cardQuick" tabindex="0">
+          <div class="mode-card" id="cardLocal" tabindex="0">
             <div class="mode-badge" data-i18n="modeQuickBadge">推荐</div>
-            <div class="mode-title" data-i18n="modeQuickTitle">快速启动</div>
-            <div class="mode-desc" data-i18n="modeQuickDesc">官方 npx @deepseek-ai/dsh web，最快开始使用</div>
+            <div class="mode-title" data-i18n="modeLocalTitle">极速启动</div>
+            <div class="mode-desc" data-i18n="modeLocalDesc">本地运行秒级启动，后台自动检查更新，最稳最快</div>
             <ul class="mode-features">
-              <li data-i18n="modeQuickF1">按官方规范 npx 自动安装</li>
-              <li data-i18n="modeQuickF2">自动选择最快国内镜像</li>
-              <li data-i18n="modeQuickF3">无需安装额外工具</li>
+              <li data-i18n="modeLocalF1">本地固定目录，启动不走 npm，秒级启动</li>
+              <li data-i18n="modeLocalF2">后台自动检查官方新版本，一键更新</li>
+              <li data-i18n="modeLocalF3">无需联网即可启动，断网也能用</li>
             </ul>
-            <div class="mode-btn" data-i18n="modeQuickBtn">选择快速启动</div>
+            <div class="mode-btn" data-i18n="modeLocalBtn">选择极速启动</div>
           </div>
 
           <div class="mode-card" id="cardSource" tabindex="0">
@@ -330,6 +337,23 @@
             </div>
           </section>
 
+          <!-- 工作目录（dsh 数据归属） -->
+          <section class="panel">
+            <div class="panel-title" data-i18n="setWorkspaceTitle">工作目录</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div data-i18n="setWorkspaceLabel">dsh 工作目录</div>
+                <div class="settings-desc" data-i18n="setWorkspaceDesc">聊天记录与工作区数据按工作目录保存。默认自动检测最近使用的目录；如读不到历史数据，可在此手动指定。</div>
+              </div>
+            </div>
+            <input type="text" id="setWorkspaceInput" class="settings-text-input" placeholder="如 C:\Users\You\Desktop\DeepSeek" spellcheck="false" />
+            <div class="settings-row workspace-actions">
+              <button class="btn" id="setWorkspaceSaveBtn" data-i18n="setWorkspaceSave">保存</button>
+              <button class="btn" id="setWorkspaceDetectBtn" data-i18n="setWorkspaceDetect">自动检测</button>
+            </div>
+            <div class="workspace-hint" id="setWorkspaceHint"></div>
+          </section>
+
           <!-- 通知 -->
           <section class="panel">
             <div class="panel-title" data-i18n="setNotifications">通知</div>
@@ -360,13 +384,32 @@
             </div>
           </section>
 
+          <!-- 查看日志 -->
+          <section class="panel">
+            <div class="panel-title" data-i18n="setLogTitle">查看日志</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div data-i18n="setLogDesc">查看应用运行日志，便于排查启动、插件与服务问题。日志按天保存在以下文件：</div>
+                <div class="workspace-hint" id="setLogPath"></div>
+              </div>
+            </div>
+            <div class="settings-row log-actions">
+              <button class="btn" id="setLogRefreshBtn" data-i18n="btnRefresh">刷新</button>
+              <button class="btn" id="setLogFileBtn" data-i18n="setLogOpenFile">打开日志文件</button>
+              <button class="btn" id="setLogFolderBtn" data-i18n="setLogOpenFolder">打开日志目录</button>
+            </div>
+            <div class="log-view" id="setLogView">
+              <div class="log-hint" data-i18n="logWaiting">等待输出...</div>
+            </div>
+          </section>
+
           <!-- 运行环境（dsh 版本） -->
           <section class="panel">
             <div class="panel-title" data-i18n="setRuntimeTitle">运行环境（dsh）</div>
             <div class="settings-row">
               <div class="settings-row-text">
                 <div class="update-status" id="setDshVersion">当前版本：-</div>
-                <div class="settings-desc" data-i18n="setRuntimeDesc">快速启动使用 npm exec（npx）方式：每次启动都会自动解析并更新到官方 registry 的最新版本</div>
+                <div class="settings-desc" data-i18n="setRuntimeDesc">极速启动：本地运行秒级启动；后台自动检查官方新版本，发现新版可在运行状态栏一键更新</div>
               </div>
               <button class="btn" id="setDshCheckBtn" data-i18n="setDshCheck">检查最新版本</button>
             </div>

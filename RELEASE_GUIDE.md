@@ -1,6 +1,8 @@
 # dsh-desktop 发布全流程指南
 
 > 从版本更新、提交、打包到发布 GitHub Release 的完整操作手册。适用于 `dsh-desktop`（DeepSeek Harness 桌面版）。
+>
+> **分工约定**：发布动作（更新版本/文档、提交、打标签、创建 GitHub Release 正文）由 **AI 助手**执行；**Windows 安装包由用户自行打包并上传**到 Release 资产区。
 
 ---
 
@@ -12,7 +14,7 @@
 | npm | 随 Node.js 安装 |
 | Git | 已配置 Windows 凭据管理器（`git config credential.helper` 为 `manager`） |
 | 远程仓库 | `https://github.com/feiyang-dev/DeepSeek-Harness-Desktop.git`（main 分支） |
-| 依赖 | 首次需 `npm install`（国内可先 `npm config set registry https://registry.npmmirror.com`） |
+| GitHub Token | Windows 凭据管理器 `git:https://github.com` 条目（标准 PAT，40 字符） |
 
 > **注意**：开发机 git 全局配置了本地代理 `http://127.0.0.1:26561`，代理未启动时会推送失败；且本地代理证书链不完整，可能报 `SSL certificate problem`。**发布时临时**用以下参数绕过（不改全局配置）：
 > ```
@@ -21,18 +23,19 @@
 
 ---
 
-## 1. 确认版本与更新日志
+## 1. 确认版本与更新日志（AI）
 
 1. 确认 `package.json` 的 `version` 字段与 `CHANGELOG.md` 最新条目一致：
    ```bash
    node -e "const p=require('./package.json'); console.log(p.version)"
    # CHANGELOG.md 第一条应为: ## vX.Y.Z (日期)
    ```
-2. 若版本不一致，先更新两者。`pack.js`（`node pack.js`）可交互式更新版本号并写日志，但**推荐手动维护**，保证措辞一致。
+2. 若版本不一致，先更新两者（`package.json` 升版本号；`CHANGELOG.md` 顶部新增条目）。
+3. 版本号策略：功能新增 / 体验变更 → `minor`（如 1.9.0 → 1.10.0）；修复为主 → `patch`（如 1.9.0 → 1.9.1）。本次 v1.9.1 为 patch 级别。
 
 ---
 
-## 2. 更新发布说明（RELEASE_NOTES.md）
+## 2. 更新发布说明（RELEASE_NOTES.md）（AI）
 
 `RELEASE_NOTES.md` 是 GitHub Release 的正文，每次发布都需更新为最新版本内容：
 
@@ -40,45 +43,24 @@
 - 「安装方式」中的 exe 文件名改成对应版本
 - 「本版更新」按 CHANGELOG 最新条目整理，突出用户可感知的变化
 - 保留「核心特性」「技术说明」「已知事项」等固定章节
+- 同步更新 `README.md` / `README.zh.md` 中可能变化的说明（模式名、行为变更等）
 
 ---
 
-## 3. 打包 Windows 安装包
+## 3. 提交代码并推送 main（AI）
 
 ```bash
-# 清理旧产物后重新打包（必须，避免残留导致 rcedit 失败）
-cd dsh-desktop
-rmdir /s /q release
-npm run dist        # 等价于 electron-builder --win
-```
-
-产物位于 `release/`：
-
-```
-DeepSeek Harness 桌面版-Setup-X.Y.Z.exe   # NSIS 安装包
-DeepSeek Harness 桌面版-Setup-X.Y.Z.exe.blockmap
-latest.yml                                 # 在线更新清单
-win-unpacked/                              # 免安装版
-```
-
-> **权限说明**：electron-builder 解压 winCodeSign 需创建符号链接，若报权限错误需以管理员运行（`pack.bat` 内置 UAC 提权逻辑）。本项目当前版本已在普通权限下成功打包。
-
-> **已知事项**：`latest.yml` 中的 `url` 为小写化文件名（如 `dsh-desktop-setup-1.7.0.exe`），与磁盘上的中文文件名不一致，属 electron-builder 行为，在线更新依赖更新服务端（`dsh-update-server`）的映射处理，与 GitHub Release 发布无关。
-
----
-
-## 4. 提交代码并推送 main
-
-```bash
-git add CHANGELOG.md RELEASE_NOTES.md package.json boot/ main.js .github/workflows/ ...
+git add CHANGELOG.md RELEASE_NOTES.md package.json boot/ main.js README.md README.zh.md .github/workflows/ ...
 git commit -m "feat: vX.Y.Z <简要描述>"
 git push origin main        # 代理失效时用:
 # git -c http.proxy= -c https.proxy= -c http.sslVerify=false push origin main
 ```
 
+> **AI 执行前**：确认工作区改动均为本次发布内容（`git status` / `git diff --stat`），无临时文件混入。
+
 ---
 
-## 5. 打标签触发 macOS 云打包
+## 4. 打标签触发 macOS 云打包（AI）
 
 `.github/workflows/build-mac.yml` 在推送 `v*` 标签时自动在 macOS runner 上构建 Intel + Apple Silicon 双架构的 dmg/zip。
 
@@ -92,15 +74,23 @@ git push origin vX.Y.Z     # 同样可加 -c 参数绕过代理
 > - 标签应打在**包含所有发布内容（含 workflow 修复）的 commit** 上，否则 CI 用的是旧配置。
 > - workflow 中打包命令必须带 `--publish never`：electron-builder 检测到 tag 存在时默认 `onTagOrDraft` 会尝试自动发布到 GitHub Release，而 runner 没有 `GH_TOKEN`，会导致**构建产物已生成但整个 job 报错失败**。
 > - 若标签指向有误需重推：`git tag -d vX.Y.Z` → 重建标签 → `git push origin :refs/tags/vX.Y.Z`（删除远程）→ `git push origin vX.Y.Z`。
-> - 删除远程标签会使已关联的 Release 变为 **draft（untagged）状态**，需重新发布（见第 7 节）。
+> - 删除远程标签会使已关联的 Release 变为 **draft（untagged）状态**，需重新发布（见第 8 节）。
 
 ---
 
-## 6. 创建 GitHub Release（正文 + 上传 Windows 安装包）
+## 5. 创建 GitHub Release（AI，不含安装包）
 
 无 `gh` CLI 时用 GitHub REST API。Token 从 Windows 凭据管理器读取（`git:https://github.com` 条目，标准 PAT，40 字符）。
 
-### 6.1 创建 Release
+### 5.1 创建 Release（只建正文，不传资产）
+
+使用仓库内置脚本（读取 `package.json` 版本 + `RELEASE_NOTES.md` 正文）：
+
+```
+node --use-system-ca gh-create-release.js
+```
+
+等价 REST 调用：
 
 ```
 POST https://api.github.com/repos/feiyang-dev/DeepSeek-Harness-Desktop/releases
@@ -116,15 +106,34 @@ Authorization: token <PAT>
 
 > 注意：`body` 必须为字符串，且包含中文时确保以 UTF-8 发送。Windows PowerShell 5.1 的 `Get-Content`/`ConvertTo-Json` 易产生编码问题，推荐用 Node.js 脚本（`fs.readFileSync(..., 'utf8')`）构造 JSON。
 
-### 6.2 上传 Windows 安装包
+### 5.2 创建后反馈
 
-```
-POST https://uploads.github.com/repos/<owner>/<repo>/releases/<release_id>/assets?name=<文件名>
-Content-Type: application/octet-stream
-Body: 安装包二进制
-```
+创建成功后把 **Release 页面 URL** 反馈给用户，并提醒用户下一步上传安装包。
 
-> 上传 70+ MB 文件需较长等待；本机因代理证书问题，Node 请求需加 `--use-system-ca` 参数。
+---
+
+## 6. 上传 Windows 安装包（用户）
+
+**用户操作**（AI 不执行此步）：
+
+1. 在本地 `dsh-desktop` 目录打包：
+   ```bash
+   rmdir /s /q release
+   npm run dist        # 等价于 electron-builder --win
+   ```
+   > electron-builder 解压 winCodeSign 需创建符号链接，若报权限错误需以管理员运行（`pack.bat` 内置 UAC 提权逻辑）。
+2. 打开上一步创建的 Release 页面，在 **Assets → 点击齿轮图标 → Upload binaries**（或直接拖拽文件）上传：
+   ```
+   DeepSeek Harness 桌面版-Setup-X.Y.Z.exe   # NSIS 安装包
+   ```
+3. 也可用 API 上传（本机因代理证书问题，Node 请求需加 `--use-system-ca` 参数）：
+   ```
+   POST https://uploads.github.com/repos/<owner>/<repo>/releases/<release_id>/assets?name=<文件名>
+   Content-Type: application/octet-stream
+   Body: 安装包二进制
+   ```
+
+> **已知事项**：`latest.yml` 中的 `url` 为小写化文件名（如 `dsh-desktop-setup-1.7.0.exe`），与磁盘上的中文文件名不一致，属 electron-builder 行为，在线更新依赖更新服务端（`dsh-update-server`）的映射处理，与 GitHub Release 发布无关。
 
 ---
 
@@ -182,18 +191,22 @@ git status          # 无未提交变更
 
 ---
 
-## 10. 快速清单（一次发布的最小步骤）
+## 10. 快速清单（AI + 用户分工）
 
 ```bash
-# 1. 确认版本号一致 (package.json / CHANGELOG.md)
-# 2. 更新 RELEASE_NOTES.md
-# 3. 打包: rmdir /s /q release && npm run dist
-# 4. 提交: git add -A && git commit -m "feat: vX.Y.Z ..."
-# 5. 推送 main（代理失效加 -c 参数）
-# 6. 打标签并推送: git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
-# 7. 创建 Release + 上传 Windows exe（REST API）
-# 8. 下载 Actions artifact 上传 macOS 产物（可选）
-# 9. 验证 Release 与 Actions 状态
+# ===== AI 部分 =====
+# 1. 确认版本号一致 (package.json / CHANGELOG.md)，不一致则更新
+# 2. 更新 RELEASE_NOTES.md（+ README 中变化的说明）
+# 3. 提交: git add -A && git commit -m "feat: vX.Y.Z ..."
+# 4. 推送 main（代理失效加 -c 参数）
+# 5. 打标签并推送: git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
+# 6. 创建 Release（正文）: node --use-system-ca gh-create-release.js
+# 7. 反馈 Release URL 给用户
+
+# ===== 用户部分 =====
+# 8. 本地打包: rmdir /s /q release && npm run dist
+# 9. 到 Release 页面手动上传: DeepSeek Harness 桌面版-Setup-X.Y.Z.exe
+# 10.（可选）从 Actions 下载 macOS artifact 上传
 ```
 
 ---

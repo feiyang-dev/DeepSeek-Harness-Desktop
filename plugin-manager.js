@@ -4,7 +4,8 @@
 //  插件管理器（纯 Node 逻辑，无 Electron 依赖，可独立测试）
 //
 //  功能：在 DSH profile 中一键安装 / 卸载 / 查询插件。
-//  默认推荐插件为 @feiyang666/deepseekharnessdesktop（用量与消耗插件），
+//  默认推荐插件为 @feiyang666/dsh-usage-plugin（用量与消耗插件，新包名；
+//  旧包名 @feiyang666/deepseekharnessdesktop 已停止维护），
 //  同时支持用户自定义包名 / 安装命令（npm 包 spec）。
 //
 //  安装逻辑与官方 `dsh plugin --profile <name> add <pkg>` 等价，但不依赖
@@ -17,11 +18,19 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const PLUGIN_PKG = '@feiyang666/deepseekharnessdesktop';
+// 用量与消耗插件：新包名（推荐安装用）
+const PLUGIN_PKG = '@feiyang666/dsh-usage-plugin';
+// 用量与消耗插件：旧包名（@feiyang666/deepseekharnessdesktop，已停止维护，
+// 仅用于兼容识别旧安装，避免「装了旧包还显示未装」）
+const PLUGIN_PKG_LEGACY = '@feiyang666/deepseekharnessdesktop';
+// 数据保险箱：新包名（推荐安装用）
 const PLUGIN_VAULT_PKG = '@feiyang666/dsh-vault';
-// 旧包名兼容：已按旧名安装的用户在升级时仍能命中推荐识别与 schema 补丁
+// 数据保险箱：旧包名（@feiyang666/deepseekharnessdesktop-vault，已停止维护，
+// 仅用于兼容识别旧安装）
 const PLUGIN_VAULT_PKG_LEGACY = '@feiyang666/deepseekharnessdesktop-vault';
 const PLUGIN_VAULT_PKGS = [PLUGIN_VAULT_PKG, PLUGIN_VAULT_PKG_LEGACY];
+// 全部推荐插件包名（新名 + 旧名），用于识别「已安装（含旧包名安装）」
+const PLUGIN_PKGS = [PLUGIN_PKG, PLUGIN_PKG_LEGACY, PLUGIN_VAULT_PKG, PLUGIN_VAULT_PKG_LEGACY];
 const DEFAULT_PROFILE = 'web';
 
 // 推荐插件列表（桌面端「插件管理」页推荐区域展示）
@@ -210,8 +219,12 @@ function pluginStatus(dir, pkg) {
   };
 }
 
-// 查询某包对应的旧名别名（数据保险箱改名映射）
+// 查询某包对应的旧名/新名别名（双向）：
+//   - 用量插件：@feiyang666/deepseekharnessdesktop <-> @feiyang666/dsh-usage-plugin
+//   - 数据保险箱：@feiyang666/deepseekharnessdesktop-vault <-> @feiyang666/dsh-vault
 function legacyAliasFor(name) {
+  if (name === PLUGIN_PKG) return PLUGIN_PKG_LEGACY;
+  if (name === PLUGIN_PKG_LEGACY) return PLUGIN_PKG;
   if (name === PLUGIN_VAULT_PKG) return PLUGIN_VAULT_PKG_LEGACY;
   if (name === PLUGIN_VAULT_PKG_LEGACY) return PLUGIN_VAULT_PKG;
   return null;
@@ -614,9 +627,11 @@ function removeLegacyPatchRow(cordisPath, pkgName) {
 
 module.exports = {
   PLUGIN_PKG,
+  PLUGIN_PKG_LEGACY,
   PLUGIN_VAULT_PKG,
   PLUGIN_VAULT_PKG_LEGACY,
   PLUGIN_VAULT_PKGS,
+  PLUGIN_PKGS,
   legacyAliasFor,
   DEFAULT_PROFILE,
   BASE_PKGS,

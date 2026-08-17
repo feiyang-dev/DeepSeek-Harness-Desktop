@@ -1,7 +1,7 @@
 'use strict';
 
 const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, nativeTheme, shell, dialog, Notification } = require('electron');
-const { spawn, execFile } = require('node:child_process');
+const { spawn, spawnSync, execFile } = require('node:child_process');
 const http = require('node:http');
 const https = require('node:https');
 const net = require('node:net');
@@ -17,6 +17,14 @@ const dshSettings = require('./dsh-settings.js');
 //  全局状态
 // ============================================================
 const isWin = process.platform === 'win32';
+// Windows 下把控制台代码页切到 UTF-8：main.js 日志输出 UTF-8 中文，若终端是
+// GBK（chcp 936）会显示乱码（如「鍚姩」）。从 start.bat / cmd 启动时共享控制台，
+// chcp 65001 对当前控制台立即生效；无控制台（双击 GUI 启动）时静默跳过。
+if (isWin) {
+  try {
+    spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/c', 'chcp', '65001'], { stdio: 'ignore', windowsHide: true });
+  } catch (e) { /* ignore */ }
+}
 const DEFAULT_PORT = 3080;
 const PKG_NAME = '@deepseek-ai/dsh';
 const REPO_URL = 'https://github.com/deepseek-ai/deepseek-harness.git';
@@ -53,6 +61,42 @@ const NPM_REGISTRIES = [
 // 命中这些错误时说明"换一个镜像可能就好"，应自动切换镜像重试，
 // 避免因某个镜像缺包/不可用导致插件装不上。
 const MIRROR_FAIL_RE = /E404|404\s|Not Found|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|ESOCKETTIMEDOUT|network|fetch failed|getaddrinfo|UNABLE_TO_GET_ISSUER/i;
+
+// ============================================================
+//  原生模块崩溃码识别（Windows NTSTATUS / 0xC0000005 等）
+//  场景：dsh 服务进程在加载原生模块（koffi / node-pty / node-addon-require-builtin 等）
+//  时发生内存访问违规，进程以这些码直接退出（无 JS 堆栈、无错误输出）。
+//  常见根因：npx 缓存中损坏的预编译二进制 / 当前 Node 版本过新导致 ABI 不兼容。
+//  处理策略：识别后自动清理缓存重启一次，仍失败则给出针对性提示。
+// ============================================================
+const NATIVE_CRASH_CODES = {
+  // 0xC0000005 STATUS_ACCESS_VIOLATION —— 访问违规，最常见的原生模块崩溃
+  3221225477: '内存访问违规（0xC0000005）',
+  // 0xC0000409 STATUS_STACK_BUFFER_OVERRUN —— 栈缓冲区溢出
+  3221226505: '栈缓冲区溢出（0xC0000409）',
+  // 0xC00000FD STATUS_STACK_OVERFLOW —— 栈溢出
+  3221225725: '栈溢出（0xC00000FD）',
+  // 0xC0000135 STATUS_DLL_NOT_FOUND —— 找不到 DLL
+  3221225781: '缺少动态链接库（0xC0000135）',
+  // 0xC000000D STATUS_INVALID_PARAMETER —— 无效参数
+  3221225485: '无效参数（0xC000000D）',
+};
+
+// 判断进程退出码是否为原生模块崩溃码（Windows 崩溃码一定是负数转无符号后的 0xC0000005 形式）
+function isNativeCrashCode(code) {
+  const n = Number(code);
+  if (!Number.isInteger(n) || n === 0) return false;
+  const unsigned = n >>> 0; // 负退出码转成无符号 32 位，如 -1073741819 -> 3221225477
+  return Object.prototype.hasOwnProperty.call(NATIVE_CRASH_CODES, unsigned);
+}
+
+// 返回崩溃码的中文描述（非崩溃码返回 null）
+function describeCrashCode(code) {
+  const n = Number(code);
+  if (!Number.isInteger(n)) return null;
+  const unsigned = n >>> 0;
+  return NATIVE_CRASH_CODES[unsigned] || null;
+}
 
 // 环境变量强制指定时，仅使用指定镜像
 const forcedRegistry = (process.env.DSH_NPM_REGISTRY || '').replace(/\/+$/, '');
@@ -134,7 +178,13 @@ let quitting = false;
 let developerMode = false;      // 开发者选项模式（设置中持久化，对下次启动生效）
 let bootPhase = 'init';         // mode / detect / install / start / running / stopped / error
 let symlinkHealed = false;      // .dsh/profiles symlink 是否已自动修复过（防无限重启）
-let selectedMode = null;        // 'quick' | 'source' | 'repair'
+// npx 缓存自动修复预算（模块级，跨 startWebViaNpx 递归调用共享，防无限重启）。
+// 两类问题独立计数：原生崩溃重下也救不了 ABI 不兼容，只修 1 次；
+// 缓存损坏重下大概率有效，允许 2 次（第 2 次先 npm cache verify 校验内容缓存）。
+// 服务成功启动（finishBoot）或用户重新运行（run）时复位，下次故障仍有全额预算。
+let crashRepairBudget = 1;      // 原生模块崩溃（0xC0000005 等）自动修复剩余次数
+let cacheRepairBudget = 2;      // npx 缓存损坏（文件缺失 / main 入口缺失）自动修复剩余次数
+let selectedMode = null;        // 'quick' | 'source' | 'repair' | 'local'
 let modeTimer = null;
 let portCleanupDone = false;    // 启动时端口清理是否完成
 
@@ -148,6 +198,7 @@ const serviceState = {
   devMode: false,      // 开发者选项模式（服务端后端 + 浏览器端热更 watcher 分离运行）
   devWebPid: null,     // 浏览器端热更 watcher 进程 PID
   dshVersion: null,    // 最近一次 npx 快速启动实际运行的 dsh 版本
+  localUpdate: null,   // 离线启动模式检测到官方新版：{ latest, current }，无则 null
 };
 
 // ============================================================
@@ -197,6 +248,13 @@ const MODE_STEPS = {
     { p: 90, title: '构建完成' },
     { p: 96, title: '启动服务' },
   ],
+  local: [
+    { p: 0, title: '检测运行环境' },
+    { p: 25, title: '检查本地运行环境' },
+    { p: 45, title: '安装本地运行环境' },
+    { p: 80, title: '启动本地 dsh 服务' },
+    { p: 96, title: '启动服务' },
+  ],
 };
 
 let currentSteps = null; // 当前模式的步骤表
@@ -223,16 +281,65 @@ function setProgress(percent, stage, text, detail, hint) {
   });
 }
 
+// ============================================================
+//  日志文件（设置页「查看日志」）
+//  目录：<userData>/logs/，按天分文件 dsh-desktop-YYYY-MM-DD.log。
+//  仅做追加写入，任何异常都静默忽略，绝不阻塞主流程。
+// ============================================================
+function logsDir() {
+  try {
+    return path.join(app.getPath('userData'), 'logs');
+  } catch (e) {
+    return path.join(os.homedir(), '.dsh', 'logs');
+  }
+}
+
+function currentLogFilePath() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return path.join(logsDir(), `dsh-desktop-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}.log`);
+}
+
+function appendLogFile(text) {
+  try {
+    const file = currentLogFilePath();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const stamp = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    fs.appendFileSync(file, `[${stamp}] ${text}\n`, 'utf8');
+  } catch (e) { /* 日志写入失败不影响主流程 */ }
+}
+
+// 读取当前日志文件尾部最多 maxLines 行
+function readRecentLogs(maxLines) {
+  const file = currentLogFilePath();
+  const dir = logsDir();
+  try {
+    if (!fs.existsSync(file)) return { ok: true, content: '', file, logDir: dir };
+    const text = fs.readFileSync(file, 'utf8');
+    const lines = text.split(/\r?\n/);
+    // 去掉末尾可能出现的空行
+    while (lines.length && lines[lines.length - 1] === '') lines.pop();
+    const tail = lines.slice(Math.max(0, lines.length - (maxLines || 2000)));
+    return { ok: true, content: tail.join('\n'), file, logDir: dir };
+  } catch (e) {
+    return { ok: false, error: e.message, content: '', file, logDir: dir };
+  }
+}
+
 function logLine(line) {
   const text = typeof line === 'string' ? line : String(line);
   broadcast('boot:log', text);
+  appendLogFile(text);
   process.stderr.write('[dsh] ' + text + '\n');
 }
 
-function bootError(message) {
+// 启动失败：透传可选的崩溃码，前端据此展示针对性修复建议
+function bootError(message, crashCode) {
   bootPhase = 'error';
   logLine(`[错误] ${message}`);
-  broadcast('boot:status', { phase: 'error', message });
+  broadcast('boot:status', { phase: 'error', message, crashCode: crashCode != null ? Number(crashCode) : null });
   refreshTrayMenu();
 }
 
@@ -590,7 +697,7 @@ function selectMode(mode) {
   if (selectedMode && bootPhase !== 'error' && bootPhase !== 'stopped') return;
   selectedMode = mode;
   if (modeTimer) { clearInterval(modeTimer); modeTimer = null; }
-  logLine(`[模式] 用户选择：${mode === 'quick' ? '快速启动（npx）' : mode === 'repair' ? '本地修复' : '源码完整安装'}`);
+  logLine(`[模式] 用户选择：${mode === 'quick' ? '快速启动（npx）' : mode === 'repair' ? '本地修复' : mode === 'local' ? '极速启动（本地环境）' : '源码完整安装'}`);
   if (developerMode) {
     logLine('[模式] 开发者选项模式已开启：服务端后端与浏览器端热更 watcher（pnpm dev:web）将分离运行');
   }
@@ -610,6 +717,7 @@ async function killDshNodeProcesses() {
       const ps = `
 $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object {
   $_.CommandLine -match '@deepseek-ai[\\\\/]dsh' -or
+  $_.CommandLine -match 'dsh-local' -or
   $_.CommandLine -match 'dsh[\\\\/]lib[\\\\/]bin' -or
   $_.CommandLine -match 'npm-cli\\.js.{0,20}install -g' -or
   $_.CommandLine -match 'pnpm\\.cjs.{0,40}dsh\\s+web' -or
@@ -748,8 +856,10 @@ async function nukeLocalDshData() {
 // 提取后统一归一化为 npm 包名（@scope/name 或 name）。
 function extractBadPluginNames(startupOutput) {
   const names = new Set();
-  // 1) Cannot find package/module 'xxx'
-  const re1 = /Cannot find (?:package|module)\s+['"]([^'"]+)['"]/g;
+  // 1) Cannot find package 'xxx'（用户插件缺失）
+  //    注意：不能匹配 "Cannot find module '文件路径'"——那是 npx 缓存损坏（缺文件），
+  //    应由缓存修复分支处理，而不是当作用户插件去摘除引用。
+  const re1 = /Cannot find package\s+['"]([^'"]+)['"]/g;
   let m;
   while ((m = re1.exec(startupOutput))) {
     const simple = normalizePkgRef(m[1]);
@@ -1039,12 +1149,21 @@ function sourceStartWeb(repoPath, nodeExe, pnpmCli) {
     // 若该子进程已不是当前服务进程（用户主动停止/重启时 serverProc 已被置空），忽略其退出
     if (quitting || serverProc !== child) return;
     if (started) {
+      const desc = describeCrashCode(code);
       logLine(`[诊断] 服务曾成功启动，但后来退出 (code=${code}, signal=${signal})`);
       onServiceExited();
-      bootError(`dsh 服务启动后退出 (code=${code})，请查看日志`);
+      bootError(desc
+        ? `dsh 服务运行中崩溃（${desc}），服务已停止。可能原因：源码安装的原生模块（koffi / node-pty）不稳定。可尝试「重新运行」；若反复崩溃，建议选择「源码完整安装」重新安装依赖。`
+        : `dsh 服务启动后退出 (code=${code})，请查看日志`, code);
     } else {
+      const desc = describeCrashCode(code);
       logLine(`[诊断] 服务未输出就绪信息即退出 (code=${code}, signal=${signal})`);
-      bootError(`dsh 服务启动失败 (code=${code})，请查看日志`);
+      if (desc) {
+        const ver = getNodeVersion(nodeExe) || process.versions.node;
+        bootError(`dsh 服务启动失败：${desc}。源码安装的原生模块（koffi / node-pty）可能损坏或与当前 Node.js（v${ver}）不兼容。建议选择「源码完整安装」重新执行 pnpm install 重建原生依赖。`, code);
+      } else {
+        bootError(`dsh 服务启动失败 (code=${code})，请查看日志`);
+      }
     }
     serverProc = null;
   });
@@ -1064,6 +1183,127 @@ function onServiceExited() {
   mainWindow = null;
 }
 
+// ============================================================
+//  离线启动模式（本地固定目录，不走 npm exec / registry）
+//  核心思路：
+//    - dsh 安装到 <userData>/dsh-local 固定目录（首次安装需联网一次）
+//    - 启动时直接用 node 运行本地包入口（lib/bin.js），不再向 registry
+//      解析 latest —— 二次以后启动完全离线、无网络往返，最稳最快
+//    - 需要更新时重新执行一次「离线启动」即可联网重装到最新版
+// ============================================================
+const LOCAL_DIR_NAME = 'dsh-local';
+function localDshDir() {
+  return path.join(app.getPath('userData'), LOCAL_DIR_NAME);
+}
+
+// 解析本地 dsh 包的 bin 入口（动态读取 package.json 的 bin 字段，兼容入口改名）
+function localDshEntry() {
+  const pkgPath = path.join(localDshDir(), 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
+  if (!fs.existsSync(pkgPath)) return null;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const bin = pkg.bin || {};
+    const entry = typeof bin === 'string' ? bin : (bin.dsh || Object.values(bin)[0] || null);
+    if (!entry) return null;
+    const full = path.join(path.dirname(pkgPath), entry);
+    return fs.existsSync(full) ? full : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// 离线启动：确保本地已安装 dsh（<userData>/dsh-local），不存在则用 npm 安装一次。
+// 返回 { ok, entry }；entry 为本地 dsh bin 入口绝对路径。
+async function localInstall(nodeExe, npmCli) {
+  setProgress(25, 'install', '正在检查本地运行环境...');
+  const existing = localDshEntry();
+  if (existing) {
+    logLine('[离线] 检测到本地 dsh 运行环境（' + existing + '），跳过安装');
+    return { ok: true, entry: existing };
+  }
+  // 未安装 / 入口缺失：npm install --prefix 装到本地固定目录（跳过 koffi 编译，与快速启动一致）
+  setProgress(35, 'install', '未检测到本地运行环境，正在安装（首次需联网，之后可秒级启动）...',
+    '正在安装 @deepseek-ai/dsh 到本地固定目录', '首次安装需从镜像下载依赖，请耐心等待');
+  const dir = localDshDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const env = {
+    ...process.env,
+    npm_config_ignore_scripts: 'true',
+    npm_config_yes: 'true',
+    NPM_CONFIG_LOGLEVEL: 'info',
+  };
+  const base = [npmCli, 'install', PKG_NAME, '--prefix', dir, '--ignore-scripts', '--no-audit', '--no-fund'];
+  const r = await runCommand(nodeExe, [...base, '--registry', npmRegistry], { env }, (s) => logLine(s.replace(/\r?\n$/, '')));
+  if (r.code !== 0) {
+    // 镜像类失败（网络 / 404 缺包等）：自动切换镜像重试一次
+    const next = nextRegistry();
+    if (next && MIRROR_FAIL_RE.test(r.out)) {
+      logLine('[镜像] 自动切换镜像重试安装本地运行环境');
+      const retry = await runCommand(nodeExe, [...base, '--registry', next], { env }, (s) => logLine(s.replace(/\r?\n$/, '')));
+      if (retry.code !== 0) {
+        return { ok: false, error: '本地运行环境安装失败（已尝试多个镜像源），请查看日志' };
+      }
+    } else {
+      return { ok: false, error: '本地运行环境安装失败，请查看日志' };
+    }
+  }
+  const entry = localDshEntry();
+  if (!entry) {
+    return { ok: false, error: '本地运行环境安装完成但找不到 dsh 入口，请尝试「本地修复」或重新选择「极速启动」' };
+  }
+  setProgress(85, 'install', '本地运行环境就绪');
+  return { ok: true, entry };
+}
+
+// 离线启动：直接用 node 运行本地 dsh 包入口（不经过 npm exec，不依赖 registry）
+function localStartWeb(nodeExe, entry) {
+  const args = ['web', '--host', host, '--port', String(port)];
+  // 工作目录决定 dsh 会话数据的归属（历史数据能否读到），与快速/修复模式保持一致
+  const workDir = resolveWorkspaceDir();
+  logLine(`[目录] dsh 工作目录：${workDir}`);
+  const child = spawn(nodeExe, [entry, ...args], {
+    cwd: workDir,
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: cleanServiceEnv(),
+  });
+  serverProc = child;
+  serverSpawnedByUs = true;
+  let started = false;
+  child.stdout && child.stdout.on('data', (d) => {
+    const s = String(d);
+    logLine(s.replace(/\r?\n$/, ''));
+    if (/listening|http:\/\/|Local:|ready/i.test(s)) {
+      started = true;
+      setProgress(96, 'start', '服务已启动，正在打开界面...');
+    }
+  });
+  child.stderr && child.stderr.on('data', (d) => logLine(String(d).replace(/\r?\n$/, '')));
+  child.on('error', (err) => { logLine(`[错误] 服务启动失败: ${err.message}`); });
+  child.on('exit', (code, signal) => {
+    // 若该子进程已不是当前服务进程（用户主动停止/重启时 serverProc 已被置空），忽略其退出
+    if (quitting || serverProc !== child) return;
+    if (started) {
+      const desc = describeCrashCode(code);
+      logLine(`[诊断] 服务曾成功启动，但后来退出 (code=${code}, signal=${signal})`);
+      onServiceExited();
+      bootError(desc
+        ? `dsh 服务运行中崩溃（${desc}），服务已停止。可能原因：本地运行环境的原生模块（koffi / node-pty）不稳定。可尝试「重新运行」；若反复崩溃，建议删除本地运行环境目录（%APPDATA%\\dsh-desktop\\dsh-local）后重新选择「极速启动」重装，或选择「源码完整安装」。`
+        : `dsh 服务启动后退出 (code=${code})，请查看日志`, code);
+    } else {
+      const desc = describeCrashCode(code);
+      logLine(`[诊断] 服务未输出就绪信息即退出 (code=${code}, signal=${signal})`);
+      if (desc) {
+        const ver = getNodeVersion(nodeExe) || process.versions.node;
+        bootError(`dsh 服务启动失败：${desc}。本地运行环境的原生模块（koffi / node-pty）可能损坏或与当前 Node.js（v${ver}）不兼容。建议删除本地运行环境目录（%APPDATA%\\dsh-desktop\\dsh-local）后重新选择「极速启动」重装，或选择「源码完整安装」重建依赖。`, code);
+      } else {
+        bootError(`dsh 服务启动失败 (code=${code})，请查看日志`);
+      }
+    }
+    serverProc = null;
+  });
+}
+
 // 构建干净的服务环境变量：剥离可能污染 Node 子进程的变量（IDE 注入、Electron 相关）
 function cleanServiceEnv() {
   const env = { ...process.env };
@@ -1076,6 +1316,179 @@ function cleanServiceEnv() {
   // 确保 PATH 可用
   if (!env.PATH) env.PATH = process.env.Path || process.env.PATH;
   return env;
+}
+
+// ============================================================
+//  判断启动失败输出是否为「npx 缓存损坏」（区别于「用户插件损坏」）
+// ============================================================
+// 特征：
+//   1) "Cannot find module '...npm-cache\_npx\...'" —— dsh 或其传递依赖在 npx 缓存
+//      中的文件缺失（典型：@opentelemetry/otlp-transformer 的 build/src/index.js 丢失）；
+//   2) "Please verify that the package.json has a valid \"main\" entry" —— 主入口缺失。
+// 与「用户插件损坏」是两类问题：
+//   - 缓存损坏（路径落在 npm-cache/_npx 或 node_modules/@opentelemetry 等官方依赖）→ 清理 npx 缓存重新下载；
+//   - 用户插件损坏（"Cannot find package '@scope/name'"，位于 ~/.dsh/profiles/）→ 只摘除坏插件引用。
+function isNpxCacheCorruption(output) {
+  const s = String(output || '');
+  if (!s) return false;
+  // 主入口缺失提示（几乎总伴随 Cannot find module）
+  if (/valid "main" entry/i.test(s)) return true;
+  // Cannot find module 且路径落在 npm/npx 缓存内（Windows %LOCALAPPDATA%\npm-cache\_npx 或 mac/Linux ~/.npm/_npx）
+  if (/Cannot find module[^\r\n]*(?:npm-cache[\\/]_npx|[\\/]_npx[\\/])/i.test(s)) return true;
+  // 官方传递依赖缺失：@opentelemetry 等（build/src/index.js 缺失是缓存解压不完整的典型）
+  if (/Cannot find module[^\r\n]*node_modules[\\/]@opentelemetry/i.test(s)) return true;
+  return false;
+}
+
+// ============================================================
+//  二级修复：npm cache verify —— 校验 npm 内容缓存（_cacache）
+// ============================================================
+// 场景：清空 _npx 后重新下载，若 _cacache 中的 tarball 本身损坏（校验和不符 /
+// 网络中断写坏），npm 仍会解出同样的坏包 → 再次文件缺失。verify 会校验并剔除
+// 损坏条目，下次下载强制走网络重新拉取完整 tarball。
+// 异步流式执行（可长达数十秒），带 3 分钟超时保护；结果写入日志。
+function npmCacheVerify(nodeExe, npmCli) {
+  return new Promise((resolve) => {
+    logLine('[缓存修复] 正在执行 npm cache verify 校验内容缓存（可能需要一两分钟）...');
+    const env = cleanServiceEnv();
+    env.npm_config_registry = npmRegistry;
+    const child = spawn(nodeExe, [npmCli, 'cache', 'verify', '--registry', npmRegistry], {
+      cwd: app.getPath('userData'),
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env,
+    });
+    let out = '';
+    const onData = (d) => { out += String(d); };
+    child.stdout && child.stdout.on('data', onData);
+    child.stderr && child.stderr.on('data', onData);
+    const timer = setTimeout(() => {
+      logLine('[缓存修复] npm cache verify 超时（3 分钟），跳过校验继续修复流程');
+      try { child.kill(); } catch (e) { /* ignore */ }
+      resolve(false);
+    }, 3 * 60 * 1000);
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      logLine(`[缓存修复] npm cache verify 执行失败：${err.message}`);
+      resolve(false);
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      const ok = code === 0;
+      // verify 输出含 "Content verified" / "Index verified" 摘要，保留末尾几行供排查
+      const tail = out.trim().split(/\r?\n/).slice(-4).join(' | ');
+      logLine(`[缓存修复] npm cache verify ${ok ? '完成' : `退出（code=${code}）`}${tail ? `：${tail}` : ''}`);
+      resolve(ok);
+    });
+  });
+}
+
+// ============================================================
+//  原生模块崩溃自动修复：清理损坏缓存后重启
+// ============================================================
+// 0xC0000005 类崩溃通常来自 npx 缓存中损坏的 @deepseek-ai/dsh 预编译二进制
+// （或 node-addon 原生缓存）。清理后强制 npx 重新下载即可修复。
+// 返回清理说明（供日志展示）。
+function clearCrashCaches() {
+  const cleared = [];
+  const local = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local');
+
+  // 1) npx 缓存中损坏的 @deepseek-ai/dsh（Windows: %LOCALAPPDATA%\npm-cache\_npx\...）
+  //    mac/Linux: ~/.npm/_npx/...；可能同时存在多个 _npx 工作目录，逐个检查。
+  //    删除整个条目目录（含 package-lock 元数据），确保下次 npx 完整重新下载。
+  const npxRoots = isWin
+    ? [path.join(local, 'npm-cache', '_npx')]
+    : [path.join(os.homedir(), '.npm', '_npx')];
+  for (const npxRoot of npxRoots) {
+    if (!fs.existsSync(npxRoot)) continue;
+    try {
+      let removed = 0;
+      for (const entry of fs.readdirSync(npxRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const entryDir = path.join(npxRoot, entry.name);
+        const dshPkgDir = path.join(entryDir, 'node_modules', '@deepseek-ai', 'dsh');
+        if (fs.existsSync(dshPkgDir)) {
+          try {
+            fs.rmSync(entryDir, { recursive: true, force: true });
+            removed++;
+          } catch (e) {
+            logLine(`[崩溃修复] 删除 npx 缓存条目失败：${e.message}`);
+          }
+        }
+      }
+      if (removed > 0) cleared.push(`已清理 npx 缓存中的 @deepseek-ai/dsh（${removed} 处，下次自动重新下载）`);
+    } catch (e) {
+      logLine(`[崩溃修复] 扫描 npx 缓存失败：${e.message}`);
+    }
+  }
+
+  // 2) node-addon 原生模块缓存（node-addon-require-builtin 等预编译二进制缓存，
+  //    损坏时同样会引发 0xC0000005；位于 %LOCALAPPDATA%\node-addon-native-custom-loader\native-cache）
+  const addonCache = path.join(local, 'node-addon-native-custom-loader', 'native-cache');
+  if (fs.existsSync(addonCache)) {
+    try {
+      fs.rmSync(addonCache, { recursive: true, force: true });
+      cleared.push('已清理原生模块缓存（node-addon-native-custom-loader）');
+    } catch (e) {
+      logLine(`[崩溃修复] 删除原生模块缓存失败：${e.message}`);
+    }
+  }
+
+  return cleared;
+}
+
+// 获取用户系统实际的 Node.js 版本（dsh 服务用用户系统的 node.exe 运行，
+// 而非 Electron 内嵌版本；用于崩溃提示中给出准确的版本号）。
+function getNodeVersion(nodeExe) {
+  try {
+    const r = spawnSync(nodeExe, ['--version'], { windowsHide: true, timeout: 8000, encoding: 'utf8' });
+    if (r.error) return '';
+    return String(r.stdout || '').trim().replace(/^v/i, '');
+  } catch (e) {
+    return '';
+  }
+}
+
+// 崩溃自动修复后的就绪等待循环。
+// 场景：首次进程 0xC0000005 崩溃 → 清理缓存 → 重启新进程。此时 run() 的 waitForWebReady
+// 已因 bootPhase='error' 中止并 return，为避免"服务在后台静默启动、界面却停在错误页/卡死"，
+// 由本函数独立等待新进程就绪并完成启动（finishBoot）或最终报错。
+async function crashRetryWaitReady() {
+  const bootStart = Date.now();
+  const MAX_MS = 10 * 60 * 1000; // 与主流程一致，最长等 10 分钟
+  // 本次重试开始时记录当前进程，避免误把后续用户主动重启当作重试进程
+  const retryProc = serverProc;
+  while (Date.now() - bootStart < MAX_MS) {
+    // 用户主动退出 / 服务被外部停止
+    if (quitting) return;
+    // 新进程已退出且未就绪：交给 exit 处理器最终报错（修复预算已用尽时不会再触发修复）
+    if (serverProc !== retryProc || !serverProc) {
+      // 若进程已退出并已广播错误，无需重复操作；否则超时兜底
+      if (bootPhase !== 'running' && bootPhase !== 'error') {
+        bootError('运行环境崩溃后重启失败（服务进程提前退出），请查看下方日志。');
+      }
+      return;
+    }
+    if (await isWebReady(port)) {
+      if (serverProc !== retryProc || !serverProc) return;
+      setProgress(100, 'ready', '启动完成');
+      finishBoot();
+      return;
+    }
+    const elapsed = Math.floor((Date.now() - bootStart) / 1000);
+    const pct = Math.min(60 + (elapsed / 600) * 35, 95);
+    broadcast('boot:progress', {
+      percent: Math.round(pct),
+      stage: 'start',
+      text: `正在重新启动服务，已等待 ${elapsed} 秒...`,
+      detail: '首次需重新下载运行环境依赖，请耐心等待',
+      step: resolveStep(pct),
+    });
+    await new Promise((r) => setTimeout(r, 800));
+  }
+  if (bootPhase !== 'running' && bootPhase !== 'error') {
+    bootError('运行环境崩溃后重启超时，请查看下方日志排查问题。');
+  }
 }
 
 // 快速模式启动：npx @deepseek-ai/dsh web（严格遵循官方规范）
@@ -1099,6 +1512,10 @@ function startWebViaNpx(nodeExe, npmCli) {
   baseEnv.npm_config_registry = npmRegistry;
   // npm exec --yes -- <pkg> <args>：`--` 之后为包名与 dsh 子命令参数
   const args = ['exec', '--yes', '--', PKG_NAME, 'web', '--host', host, '--port', String(port)];
+  // 工作目录决定 dsh 会话数据的归属（历史数据能否读到）。解析一次并缓存，
+  // 重试时保持一致，避免反复扫描 sessions 目录。
+  const workDir = resolveWorkspaceDir();
+  logLine(`[目录] dsh 工作目录：${workDir}`);
 
   let retriedRegistry = false; // 是否已切换过镜像重试（防无限切换）
   let retriedOffline = false;  // 是否已用缓存版本兜底重试过（防无限重启）
@@ -1109,7 +1526,7 @@ function startWebViaNpx(nodeExe, npmCli) {
   const spawnOnce = (extraEnv) => {
     const env = { ...baseEnv, ...(extraEnv || {}) };
     child = spawn(nodeExe, [npmCli, ...args], {
-      cwd: app.getPath('userData'),
+      cwd: workDir,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
       env,
@@ -1135,6 +1552,69 @@ function startWebViaNpx(nodeExe, npmCli) {
     child.on('exit', (code, signal) => {
       // 若该子进程已不是当前服务进程（用户主动停止/重启时 serverProc 已被置空），忽略其退出
       if (quitting || serverProc !== child) return;
+      // 原生模块崩溃（0xC0000005 等）：无 JS 堆栈、无错误输出，通常为 npx 缓存中的
+      // @deepseek-ai/dsh 预编译二进制损坏或与当前 Node 版本 ABI 不兼容。
+      // 自动清理损坏缓存后强制重新下载并重启一次；仍崩溃则交给下方最终报错给出针对性提示。
+      if (!started && crashRepairBudget > 0 && isNativeCrashCode(code)) {
+        crashRepairBudget--;
+        const desc = describeCrashCode(code) || `0x${(code >>> 0).toString(16).toUpperCase().padStart(8, '0')}`;
+        logLine(`[崩溃修复] 检测到原生模块崩溃（${desc}），自动清理损坏缓存后重启服务...`);
+        logLine('[崩溃修复] 提示：dsh 依赖的原生模块（koffi / node-pty 等）已随缓存损坏或与当前 Node 版本不兼容，正在清理缓存并重新下载运行环境（首次需重新下载依赖，请耐心等待）...');
+        // 注意：此处不能用 setProgress —— 它会把 bootPhase 改为 'install'，从而覆盖 'error'，
+        // 导致 run() 的 waitForWebReady（shouldAbort: bootPhase==='error'）不中止而空转到超时。
+        // 这里直接广播进度，保持 bootPhase='error' 让 run() 快速中止，由 crashRetryWaitReady 接管后续启动。
+        broadcast('boot:progress', {
+          percent: 50, stage: 'install',
+          text: '检测到运行环境崩溃，正在自动清理缓存并重新下载...',
+          detail: '已清理损坏的原生模块缓存', hint: '首次需重新下载依赖，请耐心等待',
+          step: resolveStep(50),
+        });
+        const cleared = clearCrashCaches();
+        for (const line of cleared) logLine('[崩溃修复] ' + line);
+        serverProc = null;
+        // 清理后强制 npx 重新解析下载并重启。关键：run() 的 waitForWebReady 已因
+        // bootPhase='error' 中止并 return，无人再等待新进程就绪，若只重启会停在错误界面
+        // 而服务在后台静默运行（表现为"卡死/错误"）。因此这里内嵌一个就绪等待循环，
+        // 由本分支负责完成启动（finishBoot）或最终报错。
+        setTimeout(() => {
+          if (quitting || serverProc) return;
+          startWebViaNpx(nodeExe, npmCli); // 修复预算为模块级状态，新进程的 exit 处理器不会超出预算重复修复
+          crashRetryWaitReady();
+        }, 600);
+        return;
+      }
+      // npx 缓存损坏（文件缺失 / 主入口缺失）：dsh 或其传递依赖（如 @opentelemetry/otlp-transformer）
+      // 在 npx 缓存中不完整。与「用户插件损坏」不同，应清理 npx 缓存重新下载，而非删除用户 profile 引用。
+      // cacheRepairBudget 控制自动修复次数（防无限重启）：
+      //   第 1 次：清 _npx 缓存重新下载（多数情况即可修复——下载中断留下的残缺条目）；
+      //   第 2 次（预算用尽）：说明重新下载仍解出坏包，升级为 npm cache verify 校验
+      //   _cacache 内容缓存（剔除损坏 tarball）后再清理重启，强制下次走网络拉完整包。
+      if (!started && cacheRepairBudget > 0 && isNpxCacheCorruption(startupOutput)) {
+        cacheRepairBudget--;
+        const deepVerify = cacheRepairBudget === 0; // 最后一次修复：附加深校验
+        logLine(`[缓存修复] 检测到 npx 缓存损坏（运行环境依赖文件缺失），自动清理缓存并重新下载后重启服务${deepVerify ? '，并深度校验 npm 内容缓存' : ''}...`);
+        broadcast('boot:progress', {
+          percent: 50, stage: 'install',
+          text: deepVerify
+            ? '重新下载后仍检测到依赖缺失，正在深度校验 npm 缓存并重新下载...'
+            : '检测到运行环境依赖缺失，正在自动清理缓存并重新下载...',
+          detail: deepVerify ? '正在校验并剔除损坏的缓存包' : '已清理损坏的 npx 缓存',
+          hint: '首次需重新下载依赖，请耐心等待',
+          step: resolveStep(50),
+        });
+        serverProc = null;
+        (async () => {
+          if (deepVerify) await npmCacheVerify(nodeExe, npmCli);
+          const cleared = clearCrashCaches();
+          for (const line of cleared) logLine('[缓存修复] ' + line);
+          await new Promise((r) => setTimeout(r, 600));
+          if (!quitting && !serverProc) {
+            startWebViaNpx(nodeExe, npmCli);
+            crashRetryWaitReady();
+          }
+        })();
+        return;
+      }
       // 镜像类失败（网络不通 / 404 缺包 / 超时等）：先切换到下一个镜像重试一次
       // （与 pnpm / 插件安装的失败切换策略一致）
       if (!started && !retriedRegistry && MIRROR_FAIL_RE.test(startupOutput)) {
@@ -1159,7 +1639,9 @@ function startWebViaNpx(nodeExe, npmCli) {
       // 若因插件树加载失败（残留坏插件引用 "Cannot find package '@feiyang666/...'"）
       // 或 symlink 异常：优先只删除出错的插件，不碰其他插件与用户数据；
       // 提取不到坏插件名时才回退到清理整个 profiles（同样保留用户数据）。
-      if (!symlinkHealed && /plugin tree failed to load|Cannot find package|ERR_MODULE_NOT_FOUND|failed to import loader entry|is not a symlink|symlink/i.test(startupOutput)) {
+      // 注意：npx 缓存损坏（缺文件）同样会报 plugin tree failed to load，但清 profiles
+      // 救不了它（缓存修复预算已用尽说明重下也无效），此时绝不能走本分支动用户数据。
+      if (!symlinkHealed && !isNpxCacheCorruption(startupOutput) && /plugin tree failed to load|Cannot find package|ERR_MODULE_NOT_FOUND|failed to import loader entry|is not a symlink|symlink/i.test(startupOutput)) {
         symlinkHealed = true;
         const badPlugins = extractBadPluginNames(startupOutput);
         if (badPlugins.length > 0) {
@@ -1183,12 +1665,27 @@ function startWebViaNpx(nodeExe, npmCli) {
         return;
       }
       if (started) {
+        // 曾成功启动但后来崩溃退出：运行中崩溃，多半也是原生模块（koffi / node-pty）问题
+        const desc = describeCrashCode(code);
         logLine(`[诊断] 服务曾成功启动，但后来退出 (code=${code}, signal=${signal})`);
         onServiceExited();
-        bootError(`dsh 服务启动后退出 (code=${code})，请查看日志`);
+        bootError(desc
+          ? `dsh 服务运行中崩溃（${desc}），服务已停止。可能原因：运行环境原生模块不稳定。可尝试「重新运行」；若反复崩溃，建议安装 Node.js LTS 版后重试。`
+          : `dsh 服务启动后退出 (code=${code})，请查看日志`, code);
       } else {
+        const desc = describeCrashCode(code);
         logLine(`[诊断] 服务未输出就绪信息即退出 (code=${code}, signal=${signal})`);
-        bootError(`dsh 服务启动失败 (code=${code})，请查看日志`);
+        if (desc) {
+          // 已自动清理缓存重试仍崩溃：提示原生模块与当前 Node 版本 ABI 不兼容
+          const ver = getNodeVersion(nodeExe) || process.versions.node;
+          bootError(`dsh 服务启动失败：${desc}，且自动清理缓存重试后仍无法启动。通常为当前 Node.js（v${ver}）版本过新，与 dsh 依赖的原生模块（koffi / node-pty）不兼容。建议：① 安装 Node.js LTS 稳定版后重新启动；② 或选择「源码完整安装」由官方构建流程重新安装依赖。`, code);
+        } else if (isNpxCacheCorruption(startupOutput)) {
+          // 缓存损坏自动修复两次（含 npm cache verify 深校验）后仍失败：
+          // 给出可操作的手动清理指引，而不是笼统的"查看日志"
+          bootError('dsh 服务启动失败：运行环境依赖在本地缓存中反复损坏（自动修复已尝试两次无效）。请在命令行执行 npm cache clean --force 清空全部 npm 缓存后，点击「重新运行」重新下载；若仍失败，请检查磁盘空间与杀毒软件是否拦截了下载。', code);
+        } else {
+          bootError(`dsh 服务启动失败 (code=${code})，请查看日志`);
+        }
       }
       serverProc = null;
     });
@@ -1398,6 +1895,9 @@ async function run() {
   serviceState.running = false;
   serviceState.startedAt = null;
   serviceState.pid = null;
+  // 用户主动重新运行：视为新一轮尝试，自动修复预算复位（与 finishBoot 复位策略一致）
+  crashRepairBudget = 1;
+  cacheRepairBudget = 2;
 
   // 0) 根据所选模式加载详细步骤表（快速启动 + 开发者选项模式用独立步骤表）
   currentSteps = (selectedMode === 'quick' && developerMode)
@@ -1405,7 +1905,10 @@ async function run() {
     : (MODE_STEPS[selectedMode] || MODE_STEPS.quick);
 
   // 0.1) 并发测速选择最快 npm 镜像（等待选出最快源后再安装，避免用默认源 npmjs.org 装不上；结果缓存，插件安装复用）
-  await ensureRegistrySelected();
+  //     离线启动模式若本地环境已就绪则跳过测速，保证完全离线时无需网络探测即可秒级启动
+  if (!(selectedMode === 'local' && localDshEntry())) {
+    await ensureRegistrySelected();
+  }
 
   // 1) 确保端口已释放再启动新服务：等待启动瞬间的端口清理完成（最长 10s），
   //    超时则强制终止端口占用进程并等待释放，避免旧服务/残留进程抢占端口导致
@@ -1454,6 +1957,19 @@ async function run() {
     if (!r.ok) { bootError(r.error); return; }
     setProgress(82, 'start', '正在启动 DeepSeek Harness 服务（官方快速版）...');
     startWebViaNpx(nodeExe, npmCli);
+  } else if (selectedMode === 'local') {
+    // ===== 离线启动（本地固定目录，不走 npm exec / registry）=====
+    // dsh 安装到 <userData>/dsh-local，启动直接用 node 运行本地包入口，
+    // 不依赖网络解析，二次以后启动最快最稳（首次安装仍需联网一次）。
+    setProgress(20, 'detect', '准备极速启动环境...');
+    if (!npmCli) {
+      bootError('未检测到 npm，无法安装本地运行环境。请先安装 Node.js（含 npm）后重试。');
+      return;
+    }
+    const r = await localInstall(nodeExe, npmCli);
+    if (!r.ok) { bootError(r.error); return; }
+    setProgress(80, 'start', '正在启动本地 dsh 服务（极速模式）...');
+    localStartWeb(nodeExe, r.entry);
   } else if (selectedMode === 'source') {
     // ===== 源码完整安装 =====
     // 严格规范：git clone → pnpm install → pnpm run build → pnpm dsh web
@@ -1526,6 +2042,9 @@ async function run() {
 // WebUI 在独立的新窗口（mainWindow）中打开。
 function finishBoot() {
   bootPhase = 'running';
+  // 服务成功启动：自动修复预算已达成使命，复位以保证下次故障仍有全额自愈能力
+  crashRepairBudget = 1;
+  cacheRepairBudget = 2;
   serviceState.running = true;
   serviceState.startedAt = Date.now();
   serviceState.mode = selectedMode;
@@ -1543,6 +2062,10 @@ function finishBoot() {
   // 快速 / 修复模式：异步查询 npx 实际运行的 dsh 版本并展示（不阻塞；源码 / 开发者模式跳过）
   if ((selectedMode === 'quick' || selectedMode === 'repair') && !serviceState.devMode) {
     reportDshVersion();
+  } else if (selectedMode === 'local') {
+    reportLocalDshVersion();
+    // 后台静默检查官方新版：延迟调用避免与 dsh 首次加载抢带宽，离线时查询失败静默跳过
+    setTimeout(() => checkLocalDshUpdate(), 8000);
   }
 }
 
@@ -1571,6 +2094,100 @@ function reportDshVersion() {
       }
     } catch (e) { /* 静默 */ }
   })();
+}
+
+// 查询并展示本地固定目录（<userData>/dsh-local）安装的 dsh 版本。
+// 离线启动模式专用：读取本地 package.json，无需联网，失败静默。
+function reportLocalDshVersion() {
+  try {
+    const pkgPath = path.join(localDshDir(), 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
+    if (!fs.existsSync(pkgPath)) return;
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    if (pkg && pkg.version) {
+      serviceState.dshVersion = String(pkg.version).replace(/^v/, '');
+      logLine(`[版本] 正在运行本地安装的 dsh v${serviceState.dshVersion}（极速模式：秒级启动，有新版时运行状态栏可一键更新）`);
+      broadcastServiceUpdate();
+    }
+  } catch (e) { /* 静默 */ }
+}
+
+// 离线启动模式：后台静默检查官方最新版本（复用 npm view 查询 registry）。
+// 有网时延迟调用，不抢启动带宽；离线时查询失败静默跳过，完全不影响启动。
+async function checkLocalDshUpdate() {
+  try {
+    if (serviceState.mode !== 'local') return;
+    const nodeExe = await findNodeExe();
+    const npmCli = await findNpmCli();
+    if (!nodeExe || !npmCli) return;
+    const r = await runCommand(nodeExe, [npmCli, 'view', PKG_NAME, 'version', '--registry', npmRegistry, '--no-audit', '--no-fund'], { env: cleanServiceEnv() }, () => {});
+    const line = String(r.out || '').split(/\r?\n/).map((s) => s.trim()).find((s) => /^\d+\.\d+\.\d+/.test(s));
+    if (!line) return;
+    const latest = line.replace(/^v/, '');
+    const running = serviceState.dshVersion;
+    if (running && latest && running !== latest) {
+      serviceState.localUpdate = { latest, current: running };
+      logLine(`[版本] 检测到官方新版 dsh v${latest}（当前 v${running}），可在运行状态栏一键更新`);
+      broadcastServiceUpdate();
+    } else if (running && latest && running === latest) {
+      logLine(`[版本] 本地运行环境已是最新版 v${running}`);
+    }
+  } catch (e) { /* 静默：离线或查询失败不阻塞 */ }
+}
+
+// 离线启动模式：一键更新 —— 停止服务 → 重装本地 dsh 到最新版 → 自动重启。
+async function updateLocalDsh() {
+  if (serviceState.mode !== 'local' && selectedMode !== 'local') {
+    return { ok: false, error: '仅极速启动模式支持一键更新' };
+  }
+  logLine('[更新] 开始一键更新本地运行环境...');
+  try {
+    // 1) 停止当前服务（含残留端口进程、watcher），关闭 WebUI 窗口
+    setProgress(12, 'install', '正在停止当前服务...');
+    await stopWebService();
+    await stopDevWebWatcher();
+    if (isWin) await killProcessOnPort(port);
+    onServiceExited();
+  } catch (e) { /* 停止失败继续执行 */ }
+  // 2) 重装本地 dsh 到最新版（npm install --prefix 覆盖旧版）
+  const nodeExe = await findNodeExe();
+  const npmCli = await findNpmCli();
+  if (!nodeExe || !npmCli) {
+    bootError('未检测到 npm，无法更新本地运行环境。请先安装 Node.js（含 npm）后重试。');
+    return { ok: false, error: '未检测到 npm' };
+  }
+  setProgress(35, 'install', '正在下载并安装最新版运行环境...',
+    '正在更新 @deepseek-ai/dsh 到官方最新版', '更新完成后服务会自动重新启动，请耐心等待');
+  const env = {
+    ...process.env,
+    npm_config_ignore_scripts: 'true',
+    npm_config_yes: 'true',
+    NPM_CONFIG_LOGLEVEL: 'info',
+  };
+  const dir = localDshDir();
+  const base = [npmCli, 'install', PKG_NAME, '--prefix', dir, '--ignore-scripts', '--no-audit', '--no-fund'];
+  let r = await runCommand(nodeExe, [...base, '--registry', npmRegistry], { env }, (s) => logLine(s.replace(/\r?\n$/, '')));
+  if (r.code !== 0) {
+    const next = nextRegistry();
+    if (next && MIRROR_FAIL_RE.test(r.out)) {
+      logLine('[镜像] 自动切换镜像重试更新本地运行环境');
+      r = await runCommand(nodeExe, [...base, '--registry', next], { env }, (s) => logLine(s.replace(/\r?\n$/, '')));
+    }
+  }
+  if (r.code !== 0) {
+    bootError('本地运行环境更新失败，请查看日志后重试。');
+    return { ok: false, error: '更新失败，请查看日志' };
+  }
+  const entry = localDshEntry();
+  if (!entry) {
+    bootError('本地运行环境更新完成但入口异常，请重新选择「极速启动」重试。');
+    return { ok: false, error: '更新完成但入口异常' };
+  }
+  // 3) 清除更新标记与旧版本号，自动重新启动
+  serviceState.dshVersion = null;
+  serviceState.localUpdate = null;
+  logLine('[更新] 本地运行环境更新完成，正在自动重新启动服务...');
+  run();
+  return { ok: true };
 }
 
 // 显示 / 重建 WebUI 主窗口（运行中或重新运行后调用）
@@ -1793,7 +2410,9 @@ app.whenReady().then(() => {
   // 读取持久化的开发者选项模式开关
   developerMode = loadAppConfig().developerMode === true;
   if (developerMode) logLine('[设置] 开发者选项模式已开启（可从设置页关闭）');
-  // 主题：应用原生层（标题栏/系统弹窗跟随）+ 监听官方 settings.yaml 反向同步
+  // 主题：先以官方 settings.yaml 为准对齐一次（消除 app-config 与官方 WebUI 的
+  // 不一致），再应用原生层（标题栏/系统弹窗跟随）+ 监听官方 settings.yaml 反向同步
+  syncThemeFromOfficial();
   applyNativeTheme();
   watchDshSettings();
   // system 档：系统深浅色实时变化时，同步到各窗口（不重启，立即跟随）
@@ -1828,7 +2447,7 @@ app.on('before-quit', (e) => {
 
 // IPC
 ipcMain.handle('boot:select-mode', (e, mode) => {
-  if (mode === 'quick' || mode === 'source' || mode === 'repair') selectMode(mode);
+  if (mode === 'quick' || mode === 'source' || mode === 'repair' || mode === 'local') selectMode(mode);
   return true;
 });
 
@@ -1942,6 +2561,142 @@ function getDeviceId() {
 }
 
 // ============================================================
+//  工作目录（dsh 服务 cwd）：决定会话/工作区数据的归属
+// ============================================================
+// dsh 的会话数据按「工作目录(cwd)」分目录存储在 ~/.dsh/sessions/<projectKey>/ 下。
+// 桌面端此前把 dsh 服务 cwd 固定成 app.getPath('userData')，导致会话写进
+// 与用户历史目录不同的新目录，旧聊天记录/工作区“读不到”。
+// 这里引入可配置的工作目录，并按历史数据智能取默认值。
+
+// 解码 projectKey 为多个候选工作目录。
+// dsh 的 projectKey 编码是有损的（官方注释 "Separator replacement ... intentionally lossy"）：
+//   - `/ \ :` 统一替换成 `-`（连续分隔符合并为一个 `-`）；
+//   - 目录名里的连字符 `-` 本身也原样保留；
+//   - 空格等其他字符转义为 `~XXXX`（如空格 -> ~0020）。
+// 因此 `-` 既可能是路径分隔符也可能是目录名的一部分，无法唯一还原。
+// 这里枚举所有「合并相邻段」的组合生成候选，由调用方用存在性校验挑选真实目录。
+function decodeProjectKeyCandidates(dirName) {
+  if (typeof dirName !== 'string') return [];
+  if (!dirName.startsWith('--') || !dirName.endsWith('--')) return [];
+  let inner = dirName.slice(2, -2);
+  if (!inner || inner === 'root' || inner === '_no-cwd') return [];
+  // 还原 ~XXXX 转义（如 ~0020 -> 空格、~4E2D -> 中）。`-` 本身不转义，因此
+  // 还原结果不会引入额外的 `-`，可放心按 `-` 分割。
+  inner = inner.replace(/~([0-9A-Fa-f]{4})/g, (m, hex) => String.fromCharCode(parseInt(hex, 16)));
+  const segs = inner.split('-');
+  if (segs.length < 2) return [];
+  const drive = segs[0];
+  if (!/^[A-Za-z]$/.test(drive)) return [];
+  const rest = segs.slice(1);
+  const n = rest.length;
+  const candidates = [];
+  const add = (mask) => {
+    const parts = [];
+    let i = 0;
+    while (i < n) {
+      let seg = rest[i];
+      while (i < n - 1 && (mask & (1 << i))) {
+        seg += '-' + rest[i + 1];
+        i += 1;
+      }
+      parts.push(seg);
+      i += 1;
+    }
+    candidates.push(drive + ':' + '\\' + parts.join('\\'));
+  };
+  if (n <= 12) {
+    // 段数不多时枚举全部组合（最多 2^11 种）
+    for (let mask = 0; mask < (1 << (n - 1)); mask++) add(mask);
+  } else {
+    // 超长路径退化：全分隔 + 常见单点合并
+    add(0);
+    for (let i = 0; i < n - 1; i++) add(1 << i);
+  }
+  return candidates;
+}
+
+// 兼容旧签名：返回首个存在性校验通过的候选，无法判定时返回全分隔解码。
+function decodeProjectKey(dirName) {
+  for (const cand of decodeProjectKeyCandidates(dirName)) {
+    try { if (fs.existsSync(cand)) return cand; } catch (e) { /* ignore */ }
+  }
+  const cands = decodeProjectKeyCandidates(dirName);
+  return cands[0] || null;
+}
+
+// 扫描 ~/.dsh/sessions/ 反推历史工作目录。
+// 策略：对每个 projectKey 枚举候选并用存在性校验筛出真实目录，再按
+// 「会话数最多优先，其次最新活动」排序 —— 会话最多者通常是用户的主要工作目录。
+function detectHistoricalWorkspace() {
+  const sessionsRoot = path.join(dshSettings.dshHomeDir(), 'sessions');
+  let best = null;
+  let bestCount = 0;
+  let bestTime = 0;
+  try {
+    if (!fs.existsSync(sessionsRoot)) return null;
+    for (const name of fs.readdirSync(sessionsRoot)) {
+      const dir = path.join(sessionsRoot, name);
+      let st;
+      try { st = fs.statSync(dir); } catch (e) { continue; }
+      if (!st.isDirectory()) continue;
+      // 取第一个存在的候选作为真实目录
+      let cwd = null;
+      for (const cand of decodeProjectKeyCandidates(name)) {
+        try { if (fs.existsSync(cand)) { cwd = cand; break; } } catch (e) { /* ignore */ }
+      }
+      if (!cwd) continue;
+      // 会话数：project 目录下的 session 子目录数；mtime：目录树内最新活动
+      let count = 0;
+      let mtime = st.mtimeMs;
+      try {
+        const walk = (d) => {
+          let entries;
+          try { entries = fs.readdirSync(d, { withFileTypes: true }); }
+          catch (e) { return; }
+          for (const entry of entries) {
+            const p = path.join(d, entry.name);
+            try {
+              const st2 = fs.statSync(p);
+              if (st2.mtimeMs > mtime) mtime = st2.mtimeMs;
+            } catch (e) { /* ignore */ }
+            if (entry.isDirectory()) {
+              count += 1;
+              walk(p);
+            }
+          }
+        };
+        walk(dir);
+      } catch (e) { /* ignore */ }
+      if (count > bestCount || (count === bestCount && mtime > bestTime)) {
+        bestCount = count;
+        bestTime = mtime;
+        best = cwd;
+      }
+    }
+  } catch (e) { /* ignore */ }
+  return best;
+}
+
+// 解析 dsh 服务实际使用的工作目录：
+//   1) app-config 里显式配置且目录存在 → 用之；
+//   2) 否则按历史会话反推最近使用目录；
+//   3) 仍无 → 用户主目录。
+function resolveWorkspaceDir() {
+  const cfg = loadAppConfig();
+  if (cfg.workspaceDir && typeof cfg.workspaceDir === 'string') {
+    try { if (fs.existsSync(cfg.workspaceDir)) return cfg.workspaceDir; }
+    catch (e) { /* ignore */ }
+  }
+  const detected = detectHistoricalWorkspace();
+  if (detected) {
+    // 历史目录可能已被删除/移动，需校验存在，否则 spawn 会因 cwd 不存在而失败
+    try { if (fs.existsSync(detected)) return detected; }
+    catch (e) { /* ignore */ }
+  }
+  return os.homedir();
+}
+
+// ============================================================
 //  界面主题（三档：dark / light / system）
 // ============================================================
 //  themeSource 是用户偏好档位（'dark' | 'light' | 'system'）；
@@ -1953,6 +2708,25 @@ function resolveEffectiveTheme() {
   if (pref === 'light') return 'light';
   if (pref === 'dark') return 'dark';
   return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
+}
+
+// 启动时以官方 settings.yaml 的 ui-theme.preference 为准，回写 app-config。
+// 原因：桌面端与官方 WebUI 主题需双向同步；若上次在 WebUI 里改过主题而桌面端
+// 未运行（或反向监听没捕获到），app-config 会残留旧值。若不先对齐，后续
+// did-finish-load 注入会拿 app-config 旧值覆盖官方实际主题，导致 WebUI 内切换
+// 主题“看起来不生效”——官方 preference 已等于目标值，setTheme 提前 return，
+// 而 DOM 却被桌面端注入成了旧主题，视觉与状态脱节。
+function syncThemeFromOfficial() {
+  try {
+    const official = dshSettings.readThemePreference();
+    if (!official) return;
+    const cfg = loadAppConfig();
+    if (cfg.theme !== official) {
+      cfg.theme = official;
+      saveAppConfig();
+      logLine(`[主题] 启动时以官方设置同步为：${official === 'dark' ? '深色' : official === 'light' ? '浅色' : '跟随系统'}`);
+    }
+  } catch (e) { /* ignore */ }
 }
 
 // 把主题应用到 Electron 原生层（标题栏 / 系统弹窗 / 右键菜单跟随）
@@ -2396,6 +3170,8 @@ ipcMain.handle('settings:get', async () => {
     dshVersion: serviceState.dshVersion,
     theme: cfg.theme,
     themeResolved: resolveEffectiveTheme(),
+    workspaceDir: resolveWorkspaceDir(),
+    detectedWorkspace: detectHistoricalWorkspace(),
     language: cfg.language === 'en' ? 'en' : 'zh',
     deviceId: cfg.deviceId,
     updateApiBase: UPDATE_API_BASE,
@@ -2409,6 +3185,30 @@ ipcMain.handle('settings:get', async () => {
 // 界面主题切换（dark / light / system），持久化 + 同步官方 WebUI + 原生层联动
 ipcMain.handle('settings:set-theme', (e, theme) => {
   return setThemePreference(theme);
+});
+
+// 设置 dsh 工作目录（决定会话/工作区数据归属，重启服务后生效）。
+// 传空字符串即清除显式配置、恢复“按历史数据自动检测”。
+ipcMain.handle('settings:set-workspace-dir', (e, dir) => {
+  const cfg = loadAppConfig();
+  const d = typeof dir === 'string' ? dir.trim() : '';
+  if (!d) {
+    delete cfg.workspaceDir;
+    saveAppConfig();
+    logLine('[目录] 工作目录已恢复为自动检测');
+    return { ok: true, workspaceDir: resolveWorkspaceDir() };
+  }
+  try {
+    if (!fs.existsSync(d)) {
+      return { ok: false, workspaceDir: resolveWorkspaceDir(), error: '目录不存在' };
+    }
+  } catch (e) {
+    return { ok: false, workspaceDir: resolveWorkspaceDir(), error: '目录不可访问' };
+  }
+  cfg.workspaceDir = d;
+  saveAppConfig();
+  logLine(`[目录] 工作目录已设为：${d}`);
+  return { ok: true, workspaceDir: d };
 });
 
 // 界面语言切换（zh / en），持久化保存
@@ -2438,6 +3238,35 @@ ipcMain.handle('settings:set-developer-mode', (e, enabled) => {
   return { ok: true, developerMode: cfg.developerMode };
 });
 
+// 查看日志：读取当前日志文件尾部内容 + 日志路径
+ipcMain.handle('settings:get-logs', () => {
+  return readRecentLogs(2000);
+});
+
+// 打开日志文件（系统默认文本编辑器）
+ipcMain.handle('settings:open-log-file', async () => {
+  const file = currentLogFilePath();
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const err = await shell.openPath(file);
+    return err ? { ok: false, error: err } : { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+// 打开日志目录（系统文件管理器）
+ipcMain.handle('settings:open-log-folder', async () => {
+  const dir = logsDir();
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const err = await shell.openPath(dir);
+    return err ? { ok: false, error: err } : { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
 // 查询 dsh 运行环境版本信息（设置页展示）：当前运行版本 + registry 最新版本。
 // 快速启动（npm exec）每次都会解析 registry 最新版并自动更新，这里仅做对比展示。
 ipcMain.handle('dsh:version-info', async () => {
@@ -2462,6 +3291,11 @@ ipcMain.handle('dsh:version-info', async () => {
     outdated: !!(running && latest && running !== latest),
     error,
   };
+});
+
+// 离线启动模式：一键更新本地运行环境到最新版（停止服务 → 重装 → 自动重启）
+ipcMain.handle('dsh:update-local', async () => {
+  return await updateLocalDsh();
 });
 
 ipcMain.handle('update:check', async () => {
@@ -2567,16 +3401,19 @@ async function queryNpmLatestVersion(pkgName) {
 }
 
 // 检测已安装插件的更新：遍历已安装列表，逐个查询 npm registry 最新版本并对比。
-// 旧包名安装的插件（如 @feiyang666/deepseekharnessdesktop-vault）会改为查询新包名
-// （@feiyang666/dsh-vault），并标记 legacyMigrate 提示可迁移。
+// 旧包名安装的插件（如 @feiyang666/deepseekharnessdesktop、deepseekharnessdesktop-vault）
+// 会改为查询新包名（@feiyang666/dsh-usage-plugin、@feiyang666/dsh-vault），
+// 并标记 legacyMigrate 提示可迁移。
 ipcMain.handle('plugin:check-updates', async () => {
   try {
     const installed = pluginMgr.listInstalledPlugins(pluginMgr.profileDir());
     const results = [];
     for (const p of installed) {
-      // 旧包名 -> 检查新包名的最新版本
-      const alias = pluginMgr.legacyAliasFor(p.pkg);
-      const checkPkg = alias || p.pkg;
+      // 只有真正按「旧包名」安装的插件才需要迁移提示：旧包名 -> 查询并迁移到新包名。
+      // 注意不能依赖 legacyAliasFor(p.pkg) !== p.pkg 判断——它是双向映射，新包名
+      // 也会返回旧名，导致新包被误标成「旧包名，可迁移」。
+      const isLegacy = p.pkg === pluginMgr.PLUGIN_PKG_LEGACY || p.pkg === pluginMgr.PLUGIN_VAULT_PKG_LEGACY;
+      const checkPkg = isLegacy ? (pluginMgr.legacyAliasFor(p.pkg) || p.pkg) : p.pkg;
       const { version, error } = await queryNpmLatestVersion(checkPkg);
       const current = p.version || '';
       results.push({
@@ -2585,7 +3422,7 @@ ipcMain.handle('plugin:check-updates', async () => {
         current,
         latest: version,
         outdated: !!(version && current && compareVersions(version, current) > 0),
-        legacyMigrate: checkPkg !== p.pkg,
+        legacyMigrate: isLegacy,
         error: error || null,
       });
     }
@@ -2780,7 +3617,7 @@ function failInstall(_opKey, message) {
   return { ok: false, error: message };
 }
 
-// 一键安装推荐插件（pkg 缺省为 @feiyang666/deepseekharnessdesktop）
+// 一键安装推荐插件（pkg 缺省为 @feiyang666/dsh-usage-plugin）
 ipcMain.handle('plugin:install', async (e, payload) => {
   const pkg = payload && typeof payload === 'object' ? payload.pkg : null;
   return await doInstallPlugin(pkg || null);
