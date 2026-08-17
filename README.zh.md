@@ -167,8 +167,26 @@ dsh-desktop/
 
 关键实现：
 
-- 极速模式：`npm install @deepseek-ai/dsh --prefix <userData>/dsh-local` 安装到本地固定目录，启动直接用 `node <localDshDir>/lib/bin.js web`，**不经过 npm exec、不解析依赖树**，二次以后启动秒级且完全离线；首次安装走国内镜像（npmmirror），失败自动切换
-- **版本策略（极速启动）**：启动后后台静默检查官方最新版（8 秒后延迟查询，不抢启动带宽），发现新版时首页运行状态栏显示「一键更新」，点击自动「停止服务 → 重装本地环境 → 自动重启」；断网时跳过检查，完全不影响启动
+### 极速启动的运行原理（为什么秒级、为什么离线可用）
+
+**为什么原「快速启动」慢？** 快速启动走的是 `npm exec --yes -- @deepseek-ai/dsh web`（npx）。dsh 官方包拆成了 **150+ 个相互依赖的子包**（`@deepseek-ai/dsh-*`），`npm exec` 每次启动都要：
+
+1. 向 registry **解析 `latest`**（一次 HTTP 往返）；
+2. 对**每一个子包**逐个发 HTTP 请求做 `cache revalidated`（版本校验，哪怕本地已有缓存）；
+3. 校验通过后**逐个解压 tarball**，组装成新的 npx 沙箱目录。
+
+这 150+ 个包的串行校验 + 解压，即使全部命中缓存也要 **100~200 秒**（国内网络下尤其明显）——这是「启动一个服务要 200 多秒」的根因，**不是网络慢，而是 npm 每次都在重复解析整棵依赖树**。
+
+**极速启动做了什么？** 把「安装」和「启动」彻底分离，**安装一次，启动无数次**：
+
+- **首次（需联网一次）**：执行 `npm install @deepseek-ai/dsh --prefix <userData>/dsh-local --ignore-scripts`，把 dsh 及全部 150+ 依赖**完整解压到本地固定目录**（`%APPDATA%\dsh-desktop\dsh-local\node_modules`），形成一棵"已就绪"的依赖树并落盘。走国内镜像（npmmirror），失败自动切换。
+- **之后每次启动（完全离线）**：直接 `spawn(node, [<dsh-local>/node_modules/@deepseek-ai/dsh/lib/bin.js, 'web', ...])` —— 用 Node.js 进程直接加载本地已解压的 `bin.js` 入口。**没有 npm 参与**：不解析 `latest`、不发任何 HTTP 请求、不校验 tarball、不解压依赖。Node 的 `require` 直接命中本地 `node_modules`，几秒内服务就绪。
+- 工作目录与快速/修复模式保持一致（`resolveWorkspaceDir()`），保证会话历史数据归属不变。
+
+**更新怎么解决？** 极速启动不追求"每次启动都是最新版"，而是**后台静默检查**：启动后约 8 秒（避开首次加载抢带宽），执行 `npm view @deepseek-ai/dsh version` 查询官方最新版；发现新版时首页运行状态栏显示「一键更新」，点击自动「停止服务 → 重装本地环境到最新版 → 自动重启」，全程走国内镜像、失败自动切换。断网时跳过检查，完全不影响启动。
+
+**本地已就绪时跳过镜像测速**：`run()` 中 `ensureRegistrySelected()`（镜像并发测速）仅在极速启动且本地环境未就绪时才执行——本地已装好时直接启动，完全离线场景无需网络探测。
+
 - 源码模式：仓库 clone 到 `%APPDATA%/dsh-desktop/deepseek-harness`（不污染工作区）；`pnpm install --ignore-scripts` 后 `pnpm run build`；启动用 `node --import tsx/esm apps/cli/src/bin.ts web`
 - 启动服务均不经过 cmd.exe，无终端弹窗
 

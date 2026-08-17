@@ -1225,6 +1225,13 @@ const I18N = {
     homeTitle: 'DeepSeek Harness 桌面版',
     homeSubtitle: '选择启动模式，开始使用',
     homeHint: '请选择一种启动模式，本页面不会自动进入',
+    modeDetailsSummary: '▸ 极速启动运行原理（为什么快？）',
+    modeDetailsQ1: '为什么原「快速启动」很慢？',
+    modeDetailsA1: '原「快速启动」走的是 npm exec（npx）：dsh 官方包拆成了 150+ 个相互依赖的子包，每次启动 npm 都要对每一个子包逐个向 registry 发 HTTP 请求做版本校验（cache revalidated），即使本地已有缓存也要逐个校验并解压。这 150+ 个包的串行校验与解压，全部命中缓存也要 100~200 秒 —— 这就是「启动一个服务要 200 多秒」的根本原因，并不是网络慢，而是 npm 每次都在重复解析整棵依赖树。',
+    modeDetailsQ2: '极速启动是如何做到秒级启动的？',
+    modeDetailsA2: '极速启动把「安装」和「启动」彻底分离：首次联网执行 <code>npm install @deepseek-ai/dsh --prefix %APPDATA%\\dsh-desktop\\dsh-local --ignore-scripts</code>，把 dsh 及全部 150+ 依赖完整解压到本地固定目录，形成一棵已就绪的依赖树。之后每次启动直接用 Node.js 进程运行本地入口 <code>lib/bin.js</code> 启动 <code>dsh web</code> —— 全程没有 npm 参与：不解析 latest、不发任何 HTTP 请求、不校验 tarball、不解压依赖，Node 的 require 直接命中本地 node_modules，几秒内服务就绪，且完全离线可用。',
+    modeDetailsQ3: '如何保持官方最新版本？',
+    modeDetailsA3: '极速启动不追求每次启动都解析最新版，而是启动后（约 8 秒）后台静默查询官方最新版本：发现新版时首页运行状态栏显示「一键更新」，点击后自动「停止服务 → 重装本地环境到最新版 → 自动重启」，全程走国内镜像、失败自动切换。断网时跳过检查，完全不影响启动。',
     btnOpenMain: '打开主界面',
     btnStopService: '停止运行',
     btnRestartService: '重新运行',
@@ -1369,6 +1376,13 @@ const I18N = {
     homeTitle: 'DeepSeek Harness Desktop',
     homeSubtitle: 'Choose a launch mode to get started',
     homeHint: 'Choose a launch mode — this page does not auto-start',
+    modeDetailsSummary: '▸ How Instant Start works (why is it fast?)',
+    modeDetailsQ1: 'Why was the old "Quick Start" so slow?',
+    modeDetailsA1: 'The old "Quick Start" used npm exec (npx): the official dsh package is split into 150+ interdependent sub-packages, and every startup made npm send an HTTP request to the registry for each sub-package to validate its version (cache revalidated), even when the local cache already existed — then unpacked each one. Serializing the validation and unpacking of 150+ packages takes 100~200 seconds even with a fully warm cache. That is the real reason a service took 200+ seconds to start: not a slow network, but npm re-resolving the entire dependency tree every time.',
+    modeDetailsQ2: 'How does Instant Start launch in seconds?',
+    modeDetailsA2: 'Instant Start fully separates "install" from "launch". On first (online) run it executes <code>npm install @deepseek-ai/dsh --prefix %APPDATA%\\dsh-desktop\\dsh-local --ignore-scripts</code>, fully unpacking dsh and all 150+ dependencies into a local fixed directory — a ready-to-use dependency tree. Every subsequent launch simply runs the local entry <code>lib/bin.js</code> with a Node.js process to start <code>dsh web</code>: no npm involved, no latest resolution, no HTTP requests, no tarball validation, no unpacking. Node\'s require hits the local node_modules directly, so the service is ready in seconds and works fully offline.',
+    modeDetailsQ3: 'How do updates keep it on the latest official version?',
+    modeDetailsA3: 'Instead of resolving the latest version on every start, Instant Start silently queries the latest official version in the background about 8 seconds after startup. When a new version is found, the home status bar shows "Update Now"; clicking it automatically stops the service, reinstalls the local runtime to the latest version, and restarts — all through the domestic mirror with automatic fallback. When offline, the check is skipped and startup is unaffected.',
     btnOpenMain: 'Open Main UI',
     btnStopService: 'Stop Service',
     btnRestartService: 'Restart',
@@ -1509,7 +1523,11 @@ function applyI18n() {
   const dict = I18N[currentLanguage] || I18N.zh;
   document.querySelectorAll('[data-i18n]').forEach((el) => {
     const key = el.getAttribute('data-i18n');
-    if (dict[key] != null) el.textContent = dict[key];
+    if (dict[key] != null) {
+      // 含富文本（如 <code>）的元素用 innerHTML，其余用 textContent
+      if (el.hasAttribute('data-i18n-html')) el.innerHTML = dict[key];
+      else el.textContent = dict[key];
+    }
   });
   // 复合前缀文本（如「版本 1.8.0」）：data-i18n-prefix 指定前缀 key，原内容后缀保留
   document.querySelectorAll('[data-i18n-prefix]').forEach((el) => {

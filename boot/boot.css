@@ -475,6 +475,46 @@ html, body {
 
 .mode-hint { font-size: 12.5px; color: var(--muted); margin-top: 18px; text-align: center; width: 100%; max-width: 820px; }
 
+/* 极速启动：运行原理说明（可折叠） */
+.mode-details {
+  width: 100%;
+  max-width: 820px;
+  margin-top: 16px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.mode-details > summary {
+  cursor: pointer;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  list-style: none;
+  user-select: none;
+}
+.mode-details > summary::-webkit-details-marker { display: none; }
+.mode-details > summary:hover { background: var(--hover, rgba(128,128,128,0.08)); }
+.mode-details[open] > summary { border-bottom: 1px solid var(--border); }
+.mode-details-body {
+  padding: 12px 16px 14px;
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.7;
+}
+.mode-details-body p { margin: 0 0 10px; }
+.mode-details-body p:last-child { margin-bottom: 0; }
+.mode-details-body strong { font-weight: 600; }
+.mode-details-body code {
+  background: var(--hover, rgba(128,128,128,0.12));
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: Consolas, Menlo, monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
 /* ============ 进度页 ============ */
 .brand {
   display: flex; align-items: center; gap: 14px;

@@ -167,8 +167,26 @@ dsh-desktop/
 
 Key implementation details:
 
-- Instant mode: `npm install @deepseek-ai/dsh --prefix <userData>/dsh-local` installs to a local fixed directory; startup runs `node <localDshDir>/lib/bin.js web` directly — **no npm exec, no dependency-tree resolution**, so launches are second-level and fully offline after the first install; first install uses the domestic mirror (npmmirror) with automatic fallback
-- **Version policy (Instant Start)**: a background check silently queries the latest official version after startup (8s delayed, does not compete for startup bandwidth); when a new version is found the home status bar shows a "Update Now" banner — click to auto "stop service → reinstall local runtime → auto restart". When offline the check is skipped and startup is unaffected
+### How Instant Start works (why it is second-level and offline-capable)
+
+**Why was the old "Quick Start" slow?** Quick Start ran `npm exec --yes -- @deepseek-ai/dsh web` (npx). The official dsh package is split into **150+ interdependent sub-packages** (`@deepseek-ai/dsh-*`), and `npm exec` does the following on every startup:
+
+1. Resolves `latest` from the registry (one HTTP round-trip);
+2. Sends an HTTP request for **each sub-package** to revalidate its version (`cache revalidated`), even when the local cache already exists;
+3. Unpacks each tarball into a fresh npx sandbox directory.
+
+Serializing the validation + unpacking of those 150+ packages takes **100~200 seconds** even with a fully warm cache (especially on domestic networks) — that is the root cause of a 200+ second service startup. **It is not a slow network; npm is re-resolving the whole dependency tree every time.**
+
+**What Instant Start does:** it fully separates "install" from "launch" — **install once, launch many times**:
+
+- **First run (needs network once)**: runs `npm install @deepseek-ai/dsh --prefix <userData>/dsh-local --ignore-scripts`, fully unpacking dsh and all 150+ dependencies into a local fixed directory (`%APPDATA%\dsh-desktop\dsh-local\node_modules`), forming a "ready" dependency tree on disk. Uses the domestic mirror (npmmirror) with automatic fallback.
+- **Every subsequent launch (fully offline)**: `spawn(node, [<dsh-local>/node_modules/@deepseek-ai/dsh/lib/bin.js, 'web', ...])` — the Node.js process loads the locally unpacked `bin.js` entry directly. **No npm involved**: no `latest` resolution, no HTTP requests, no tarball validation, no unpacking. Node's `require` hits the local `node_modules` directly, and the service is ready within seconds.
+- The working directory matches Quick/Repair modes (`resolveWorkspaceDir()`), so session-history ownership is unchanged.
+
+**How do updates work?** Instead of forcing "latest on every start", Instant Start **silently checks in the background**: about 8 seconds after startup (avoiding first-load bandwidth contention), it runs `npm view @deepseek-ai/dsh version` to query the latest official version. When a new version is found, the home status bar shows a "Update Now" banner — click to auto "stop service → reinstall the local runtime to the latest → auto restart", all through the domestic mirror with automatic fallback. When offline the check is skipped and startup is unaffected.
+
+**Mirror speed-test skip when local runtime is ready**: `ensureRegistrySelected()` (concurrent mirror speed test) in `run()` only executes for Instant Start when the local runtime is not yet installed — once installed it starts directly, so fully-offline scenarios need no network probing.
+
 - Source mode: repo cloned to `%APPDATA%/dsh-desktop/deepseek-harness` (keeps the workspace clean); `pnpm install --ignore-scripts` then `pnpm run build`; starts via `node --import tsx/esm apps/cli/src/bin.ts web`
 - All services start without going through `cmd.exe` — no terminal popups
 
