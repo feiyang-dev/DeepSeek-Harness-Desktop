@@ -32,6 +32,7 @@ const PER_PAGE = 30;
 const OFFICIAL_REPOS = [
   'feiyang-dev/dsh-usage-plugin',
   'feiyang-dev/dsh-vault',
+  'feiyang-dev/dsh-mobile-remote',
 ];
 
 // 已知的插件图标映射（按 npm 包名）。缺失时用主角 emoji / 首字母占位。
@@ -46,6 +47,7 @@ const KNOWN_ICONS = {
   'search': '🔎',
   'tools': '🧰',
   'agent': '🤖',
+  'mobile-remote': '📱',
 };
 
 // ------------------------------------------------------------

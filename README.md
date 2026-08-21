@@ -45,6 +45,7 @@ The home screen has a "Plugin Management" entry (left navigation) that opens a d
 - **Recommended plugins** — one-click install/uninstall of community-built plugins (install progress shows in the "Custom Install" card's command log; click "Restart Service Now" after finishing):
   - **[Usage & Cost Tracker (dsh-usage-plugin)](https://github.com/feiyang-dev/dsh-usage-plugin)**: per-call token/cache-hit stats, peak/off-peak billing, a usage calendar heatmap, balance query, and CSV/JSON/PNG export.
   - **[Data Vault (dsh-vault)](https://github.com/feiyang-dev/dsh-vault)**: auto-backups `~/.dsh` data to `~/.dsh-backups`, detects data wipe, and restores chat history and workspace data with one click.
+  - **[Mobile Remote Control (dsh-mobile-remote)](https://github.com/feiyang-dev/dsh-mobile-remote)**: control DeepSeek Harness on your PC from your phone over LAN / the internet via QR code — remote-access password gate, external tunnel status monitoring, and real-time device / runtime status.
 - **Custom install** — enter any npm package name or install command (e.g. `@scope/plugin-name` or `npm install @scope/plugin-name`); the client installs it and registers it in the runtime profile. Command-line output is shown live in the custom-install card.
 - **Installed list** — shows all installed plugins (version / registration status) with per-plugin uninstall.
 - The install logic is equivalent to the official `dsh plugin add` (npm into profile + register `dsh.profile.bundles`); **restart the service to take effect**.
@@ -53,6 +54,7 @@ The home screen has a "Plugin Management" entry (left navigation) that opens a d
 > ```bash
 > dsh plugin --profile web add @feiyang666/dsh-usage-plugin
 > dsh plugin --profile web add @feiyang666/dsh-vault
+> dsh plugin --profile web add @feiyang666/dsh-mobile-remote
 > ```
 
 ### Plugin Market (Scan GitHub Community Plugins)
@@ -229,6 +231,7 @@ A: Yes. "Local Repair" always runs the official quick-start single process (via 
 | --- | --- | --- |
 | [Usage & Cost Tracker (dsh-usage-plugin)](https://github.com/feiyang-dev/dsh-usage-plugin) | Per-call token/cache-hit stats, peak/off-peak billing, balance query, CSV/JSON/PNG export | One-click from the desktop app's recommended plugins, or `dsh plugin add @feiyang666/dsh-usage-plugin` |
 | [Data Vault (dsh-vault)](https://github.com/feiyang-dev/dsh-vault) | Auto backup / wipe detection / one-click restore — protects chat history and workspace data | One-click from the desktop app's recommended plugins, or `dsh plugin add @feiyang666/dsh-vault` |
+| [Mobile Remote Control (dsh-mobile-remote)](https://github.com/feiyang-dev/dsh-mobile-remote) | Control your PC's DeepSeek Harness from your phone via QR / LAN / internet — password gate, tunnel status, real-time device & runtime stats | One-click from the desktop app's recommended plugins, or `dsh plugin add @feiyang666/dsh-mobile-remote` |
 | [DeepSeek-Harness](https://github.com/deepseek-ai/DeepSeek-Harness) | Official CLI / Web service | — |
 
 ---

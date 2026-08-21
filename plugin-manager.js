@@ -5,7 +5,8 @@
 //
 //  功能：在 DSH profile 中一键安装 / 卸载 / 查询插件。
 //  默认推荐插件为 @feiyang666/dsh-usage-plugin（用量与消耗插件，新包名；
-//  旧包名 @feiyang666/deepseekharnessdesktop 已停止维护），
+//  旧包名 @feiyang666/deepseekharnessdesktop 已停止维护）、
+//  @feiyang666/dsh-vault（数据保险箱）、@feiyang666/dsh-mobile-remote（移动端远程控制），
 //  同时支持用户自定义包名 / 安装命令（npm 包 spec）。
 //
 //  安装逻辑与官方 `dsh plugin --profile <name> add <pkg>` 等价，但不依赖
@@ -29,8 +30,10 @@ const PLUGIN_VAULT_PKG = '@feiyang666/dsh-vault';
 // 仅用于兼容识别旧安装）
 const PLUGIN_VAULT_PKG_LEGACY = '@feiyang666/deepseekharnessdesktop-vault';
 const PLUGIN_VAULT_PKGS = [PLUGIN_VAULT_PKG, PLUGIN_VAULT_PKG_LEGACY];
+// 移动端远程控制插件：包名（推荐安装用）
+const PLUGIN_REMOTE_PKG = '@feiyang666/dsh-mobile-remote';
 // 全部推荐插件包名（新名 + 旧名），用于识别「已安装（含旧包名安装）」
-const PLUGIN_PKGS = [PLUGIN_PKG, PLUGIN_PKG_LEGACY, PLUGIN_VAULT_PKG, PLUGIN_VAULT_PKG_LEGACY];
+const PLUGIN_PKGS = [PLUGIN_PKG, PLUGIN_PKG_LEGACY, PLUGIN_VAULT_PKG, PLUGIN_VAULT_PKG_LEGACY, PLUGIN_REMOTE_PKG];
 const DEFAULT_PROFILE = 'web';
 
 // 推荐插件列表（桌面端「插件管理」页推荐区域展示）
@@ -44,6 +47,11 @@ const RECOMMENDED_PLUGINS = [
     pkg: PLUGIN_VAULT_PKG,
     title: '数据保险箱',
     desc: '自动备份 / 清空检测 / 一键恢复，保护聊天记录与工作区数据',
+  },
+  {
+    pkg: PLUGIN_REMOTE_PKG,
+    title: '移动端远程控制',
+    desc: '手机扫码 / 局域网 / 外网远程操控电脑上的 DeepSeek Harness，实时设备与系统状态',
   },
 ];
 
@@ -633,6 +641,7 @@ module.exports = {
   PLUGIN_VAULT_PKG,
   PLUGIN_VAULT_PKG_LEGACY,
   PLUGIN_VAULT_PKGS,
+  PLUGIN_REMOTE_PKG,
   PLUGIN_PKGS,
   legacyAliasFor,
   DEFAULT_PROFILE,
