@@ -211,7 +211,7 @@ A: Enable "Developer options mode" in Settings (a "Full Source Build" must be do
 A: Instant Start **auto-checks for updates in the background**: after startup it silently queries the latest official version, and when a new version is found the home status bar shows a "Update Now" banner — click to auto "stop service → reinstall the local runtime to the latest → auto restart", all through the domestic mirror with automatic fallback. The home screen shows the current dsh version; Settings → "Runtime (dsh)" can compare "current version vs latest version" with one click. When offline the check is skipped and startup is unaffected.
 
 **Q: Is "Local Repair" still available in Developer Options mode?**
-A: Yes. "Local Repair" always runs the official quick-start npx single process and is unaffected by Developer Options (repair also cleans up any leftover watcher processes).
+A: Yes. "Local Repair" always runs the official quick-start single process (via `pnpm dlx`) and is unaffected by Developer Options (repair also cleans up any leftover watcher processes).
 
 ## Tech Stack
 

@@ -364,6 +364,8 @@ async function installPlugin(options) {
 
   const env = {
     ...(options.env || process.env),
+    // 提升 npm 子进程 V8 堆上限，避免安装大型插件依赖树时 OOM；同时覆盖 IDE 注入的 NODE_OPTIONS
+    NODE_OPTIONS: '--max-old-space-size=4096',
     npm_config_ignore_scripts: 'true', // 跳过 koffi 等源码编译
     npm_config_progress: 'true',
   };

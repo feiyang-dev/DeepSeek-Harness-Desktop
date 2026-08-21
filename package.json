@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop",
-  "version": "1.9.3",
+  "version": "1.9.4",
   "description": "DeepSeek Harness 桌面版 —— 一键安装/启动/停止/重启 dsh web 服务，插件管理与自定义安装，在线更新，系统托盘常驻",
   "main": "main.js",
   "scripts": {

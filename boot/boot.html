@@ -67,7 +67,16 @@
           </span>
           <span id="sidebarRepoText">GitHub 项目</span>
         </a>
-        <div class="sidebar-version" id="sidebarVersion">v1.6.0</div>
+        <div class="sidebar-versions">
+          <div class="sidebar-version">
+            <span class="sidebar-version-label" data-i18n="sidebarVersionDesktop">桌面版</span>
+            <span class="sidebar-version-value skeleton" id="sidebarVersion"></span>
+          </div>
+          <div class="sidebar-version">
+            <span class="sidebar-version-label" data-i18n="sidebarVersionDsh">dsh</span>
+            <span class="sidebar-version-value skeleton" id="sidebarDshVersion"></span>
+          </div>
+        </div>
       </div>
     </aside>
 
@@ -80,6 +89,16 @@
           <p class="page-subtitle" id="homeSubtitle" data-i18n="homeSubtitle">选择启动模式，开始使用</p>
         </div>
 
+        <!-- 首页更新横幅（任何状态都显示：mode / stopped / running，仅检测到新版且本地环境已安装时可见） -->
+        <div class="status-update" id="statusUpdate" hidden>
+          <span class="status-update-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 5H9l-7 7 7 7h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z"/><line x1="18" y1="9" x2="12" y2="15"/><line x1="12" y1="9" x2="18" y2="15"/></svg>
+          </span>
+          <span class="status-update-text" id="statusUpdateText"></span>
+          <button class="btn btn-sm btn-primary" id="btnUpdateLocal" data-i18n="btnUpdateLocal">更新正式版</button>
+          <button class="btn btn-sm" id="btnUpdateLocalNext" data-i18n="btnUpdateLocalNext" hidden>更新预发布版</button>
+        </div>
+
         <!-- 运行状态条（running / stopped 时显示） -->
         <div class="status-panel" id="statusPanel" hidden>
           <div class="status-row">
@@ -89,15 +108,9 @@
               <div class="status-desc" id="statusDesc"></div>
             </div>
           </div>
-          <div class="status-update" id="statusUpdate" hidden>
-            <span class="status-update-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 5H9l-7 7 7 7h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z"/><line x1="18" y1="9" x2="12" y2="15"/><line x1="12" y1="9" x2="18" y2="15"/></svg>
-            </span>
-            <span class="status-update-text" id="statusUpdateText"></span>
-            <button class="btn btn-sm btn-primary" id="btnUpdateLocal" data-i18n="btnUpdateLocal">一键更新</button>
-          </div>
           <div class="status-actions" id="statusActions">
             <button class="btn btn-primary" id="btnOpenMain" data-i18n="btnOpenMain">打开主界面</button>
+            <button class="btn" id="btnOpenLog" data-i18n="setLogTitle">查看日志</button>
             <button class="btn btn-danger" id="btnStopService" data-i18n="btnStopService">停止运行</button>
             <button class="btn" id="btnRestartService" data-i18n="btnRestartService">重新运行</button>
           </div>
@@ -191,10 +204,27 @@
               <span data-i18n="logPauseScroll">暂停自动滚动</span>
             </label>
           </div>
+          <!-- 安装/更新：下载与解压实时进度条 -->
+          <div class="log-progress" id="logProgress" hidden>
+            <div class="log-progress-row">
+              <span class="log-progress-label">下载</span>
+              <div class="log-progress-track"><div class="log-progress-fill dl" id="logDlFill"></div></div>
+              <span class="log-progress-text" id="logDlText"></span>
+            </div>
+            <div class="log-progress-row">
+              <span class="log-progress-label">解压</span>
+              <div class="log-progress-track"><div class="log-progress-fill ex" id="logExFill"></div></div>
+              <span class="log-progress-text" id="logExText"></span>
+            </div>
+          </div>
           <div class="log-body" id="logBody" hidden>
             <div class="log-hint" data-i18n="logWaiting">等待输出...</div>
           </div>
         </div>
+
+        <!-- 进度页「取消操作」按钮：独立于错误 footer（footer 仅错误态显示），
+             安装/更新/清除进行中由 onProgress 控制显隐，始终可点击退出 -->
+        <button id="btnCancelProgress" class="btn progress-cancel" hidden>取消操作</button>
 
         <div class="error-tip" id="errorTip" hidden>
           <span class="error-tip-icon">
@@ -317,10 +347,18 @@
               <div class="about-logo-tile"><img class="about-logo-img" src="logo-black.svg" alt="DeepSeek Harness" /></div>
               <div class="about-info">
                 <div class="about-name" id="setAppName">DeepSeek Harness 桌面版</div>
-                <div class="about-version" data-i18n-attr="setVersion" data-i18n-prefix="setVersionPrefix">版本 <span id="setVersion">-</span></div>
+                <div class="about-version" data-i18n-attr="setVersion" data-i18n-prefix="setVersionPrefix">版本 <span id="setVersion" class="skeleton"></span></div>
               </div>
             </div>
-            <div class="settings-changelog" id="setChangelog">暂无更新日志</div>
+            <div class="settings-changelog" id="setChangelog">
+              <div class="changelog-skeleton">
+                <span class="skeleton"></span>
+                <span class="skeleton short"></span>
+                <span class="skeleton"></span>
+                <span class="skeleton short"></span>
+                <span class="skeleton"></span>
+              </div>
+            </div>
           </section>
 
           <!-- 外观（主题） -->
@@ -386,6 +424,24 @@
             </div>
           </section>
 
+          <!-- 移动端远程控制 -->
+          <section class="panel">
+            <div class="panel-title" data-i18n="setRemoteTitle">移动端远程控制</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div data-i18n="setRemoteToggleTitle">开启移动端远程控制</div>
+                <div class="settings-desc" data-i18n="setRemoteToggleDesc" data-i18n-html>开启后 dsh web 将以 <code>--host 0.0.0.0</code> 监听所有网卡。手机与电脑处于同一 Wi-Fi 时，扫码或在手机上打开下方地址，即可远程控制当前工作区。关闭后仅本机可访问。开关对下次启动生效。</div>
+              </div>
+              <label class="settings-switch">
+                <input type="checkbox" id="setRemoteToggle" />
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="workspace-hint" id="setRemoteHint" hidden>
+              <div id="setRemoteLanList"></div>
+            </div>
+          </section>
+
           <!-- 开发者选项 -->
           <section class="panel">
             <div class="panel-title" data-i18n="setDevTitle">开发者选项</div>
@@ -425,10 +481,14 @@
             <div class="panel-title" data-i18n="setRuntimeTitle">运行环境（dsh）</div>
             <div class="settings-row">
               <div class="settings-row-text">
-                <div class="update-status" id="setDshVersion">当前版本：-</div>
-                <div class="settings-desc" data-i18n="setRuntimeDesc">极速启动：本地运行秒级启动；后台自动检查官方新版本，发现新版可在运行状态栏一键更新</div>
+                <div class="update-status" id="setDshVersion"><span class="mini-spinner"></span>检测中...</div>
+                <div class="settings-desc" data-i18n="setRuntimeDesc">极速启动：本地运行秒级启动；点「检查更新」实时查询 npm 官方正式版与预发布版，发现新版可一键切换安装</div>
               </div>
-              <button class="btn" id="setDshCheckBtn" data-i18n="setDshCheck">检查最新版本</button>
+              <div class="settings-actions">
+                <button class="btn" id="setDshCheckBtn" data-i18n="setDshCheck">检查更新</button>
+                <button class="btn btn-sm btn-primary" id="btnSetUpdateStable" hidden></button>
+                <button class="btn btn-sm" id="btnSetUpdateNext" hidden></button>
+              </div>
             </div>
             <div class="plugin-note" id="setDshVersionNote" hidden></div>
 
@@ -436,7 +496,7 @@
             <div class="settings-row local-runtime-row">
               <div class="settings-row-text">
                 <div class="local-runtime-title" data-i18n="setLocalRuntimeTitle">本地运行环境</div>
-                <div class="workspace-hint" id="setLocalRuntimePath"></div>
+                <div class="workspace-hint" id="setLocalRuntimePath"><span class="skeleton"></span></div>
                 <div class="settings-desc" data-i18n="setLocalRuntimeDesc">极速启动将 dsh 及依赖安装到此固定目录，用于秒级离线启动。清除后下次选择「极速启动」会重新联网安装（首次安装通常需 3~10 分钟）。</div>
               </div>
               <button class="btn btn-danger" id="setLocalClearBtn" data-i18n="setLocalClear">清除本地运行环境</button>

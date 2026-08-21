@@ -219,7 +219,34 @@ html, body {
   flex-shrink: 0;
 }
 .sidebar-dot.running { background: var(--accent); }
-.sidebar-version { font-size: 11px; color: var(--sidebar-muted); }
+/* 侧栏底部版本号（桌面端 + dsh 两个） */
+.sidebar-versions {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding-top: 2px;
+}
+.sidebar-version {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--sidebar-muted);
+  line-height: 1.4;
+}
+.sidebar-version-label { flex-shrink: 0; opacity: 0.85; }
+.sidebar-version-value {
+  flex: 1;
+  min-width: 0;
+  text-align: right;
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* ---- 侧边栏快捷操作（语言 / 主题 / 项目地址） ---- */
 .sidebar-actions {
@@ -283,6 +310,10 @@ html, body {
   justify-content: flex-start;
   padding: 40px;
   gap: 20px;
+  /* 内容超出视口高度（如首次安装的醒目提示 + 日志面板同屏）时整页可滚动，
+     避免日志面板被挤压到视口外而看不到 */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 /* ---- 页面头 ---- */
@@ -404,12 +435,14 @@ html, body {
 .status-title { font-size: 15px; font-weight: 600; }
 .status-desc { font-size: 12.5px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
 .status-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
-/* 离线启动模式：发现官方新版的一键更新横幅（独占一行） */
+/* 首页发现官方新版的一键更新横幅（独立于状态面板，任何状态都显示） */
 .status-update {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-basis: 100%;
+  width: 100%;
+  max-width: 820px;
+  margin-bottom: 14px;
   background: var(--accent-weak);
   border: 1px solid var(--accent);
   border-radius: 6px;
@@ -568,6 +601,54 @@ html, body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ---- 加载 / 检测动画 ---- */
+/* 骨架屏：数据加载完成前的占位块（呼吸 + 扫光） */
+.skeleton {
+  position: relative;
+  display: inline-block;
+  min-width: 56px;
+  height: 13px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+  vertical-align: middle;
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: translateX(-100%);
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes skeleton-shimmer {
+  100% { transform: translateX(100%); }
+}
+/* 骨架行（多行占位，用于更新日志等大块区域） */
+.changelog-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.changelog-skeleton .skeleton {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+.changelog-skeleton .skeleton.short { width: 42%; }
+/* 小号加载圈（行内：检测中 / 加载中） */
+.mini-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  vertical-align: -1px;
+  margin-right: 5px;
+}
+
 .progress-wrap {
   width: min(440px, 90vw);
   display: flex; flex-direction: column; gap: 12px; align-items: center;
@@ -650,6 +731,9 @@ html, body {
   border-radius: 8px;
   background: var(--log-bg);
   overflow: hidden;
+  /* 进度页 flex 布局下不被上方元素挤压（首次安装提示再高，日志面板也保持完整高度） */
+  flex-shrink: 0;
+  margin-top: 4px;
 }
 .log-header {
   display: flex; align-items: center; gap: 8px;
@@ -676,7 +760,56 @@ html, body {
 }
 .log-line { white-space: pre-wrap; word-break: break-all; color: var(--log-text); }
 .log-line.err { color: var(--red); }
+/* 日志行分类着色：下载（蓝）/ 解压（绿），让用户一眼区分安装阶段 */
+.log-line.dl { color: #5b8def; }
+html[data-theme="dark"] .log-line.dl { color: #6ea8ff; }
+.log-line.ex { color: #2ea86a; }
+html[data-theme="dark"] .log-line.ex { color: #4ade80; }
 .log-hint { color: var(--muted); font-style: italic; }
+
+/* 日志面板：下载 / 解压实时进度条 */
+.log-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px 13px;
+  border-top: 1px solid var(--border);
+  background: var(--field-bg);
+}
+.log-progress-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.log-progress-label {
+  flex-shrink: 0;
+  width: 32px;
+  color: var(--muted);
+  font-weight: 600;
+}
+.log-progress-track {
+  flex: 1;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+.log-progress-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+.log-progress-fill.dl { background: var(--accent); }
+.log-progress-fill.ex { background: var(--green); }
+.log-progress-text {
+  flex-shrink: 0;
+  min-width: 96px;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
 
 /* ---- 错误提示条 ---- */
 .error-tip {
@@ -715,6 +848,15 @@ html, body {
 .footer button.primary:hover { background: var(--primary-hover); }
 .footer button.repair { background: var(--danger); border-color: var(--danger); color: #fff; }
 .footer button.repair:hover { background: var(--danger-hover); }
+/* 进度页「取消操作」按钮：独立于错误 footer，进行中显示，点击退出 */
+.progress-cancel {
+  margin-top: 10px;
+  background: transparent;
+  border: 1px solid var(--border-color, #555);
+  color: var(--text-color, #ddd);
+  font-size: 12.5px;
+}
+.progress-cancel:hover { background: var(--btn-bg-hover); border-color: var(--danger); color: var(--red, #f66); }
 
 /* ============ 插件管理页 ============ */
 .plugin-body {
@@ -999,6 +1141,8 @@ html[data-theme="dark"] .installed-badge.updatable {
 .settings-row-text { min-width: 0; }
 .settings-row-text > div:first-child { font-size: 14px; font-weight: 600; }
 .settings-desc { font-size: 12px; color: var(--muted); margin-top: 4px; line-height: 1.5; }
+/* 设置页：版本检测 / 更新按钮组（检查更新 + 正式版/预发布版更新入口） */
+.settings-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 
 /* 极速启动：本地运行环境清除区（设置页） */
 .local-runtime-row { align-items: flex-start; }
@@ -1055,6 +1199,14 @@ html[data-theme="dark"] .installed-badge.updatable {
 .workspace-actions { justify-content: flex-start; flex-wrap: wrap; }
 .workspace-actions .btn { padding: 6px 14px; }
 .workspace-hint { margin-top: 8px; font-size: 12px; color: var(--muted); word-break: break-all; }
+/* 移动端远程控制：手机访问地址条目 */
+.remote-lan-item {
+  margin-top: 4px; padding: 6px 10px;
+  font-size: 12.5px; font-family: Consolas, 'Courier New', monospace;
+  color: var(--text); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px;
+  word-break: break-all; user-select: text;
+}
 
 /* 关于 */
 .about-hero-mini { display: flex; align-items: center; gap: 14px; margin-bottom: 14px; }
@@ -1122,7 +1274,8 @@ html[data-theme="dark"] .installed-badge.updatable {
 .log-actions .btn { padding: 6px 14px; }
 .log-view {
   margin-top: 10px;
-  max-height: 280px;
+  max-height: 55vh;
+  min-height: 200px;
   overflow-y: auto;
   background: var(--log-bg);
   border: 1px solid var(--border);
@@ -1337,6 +1490,6 @@ html[data-theme="dark"] .installed-badge.updatable {
   .nav-item span:last-child { display: none; }
   .sidebar-foot { align-items: center; }
   .sidebar-status span:last-child { display: none; }
-  .sidebar-version { display: none; }
+  .sidebar-versions { display: none; }
   .view { padding: 20px 16px; }
 }

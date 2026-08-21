@@ -92,16 +92,19 @@ contextBridge.exposeInMainWorld('dsh', {
   },
   // 开发者选项模式开关（对下次启动生效）
   setDeveloperMode: (enabled) => ipcRenderer.invoke('settings:set-developer-mode', enabled),
+  // 移动端远程控制开关（开启后 dsh web 以 --host 0.0.0.0 启动，手机扫码/局域网可远程控制；对下次启动生效）
+  setRemoteControl: (enabled) => ipcRenderer.invoke('settings:set-remote-control', enabled),
   // 查看日志：读取最近日志内容（{ ok, content, file, logDir }）
   getLogs: () => ipcRenderer.invoke('settings:get-logs'),
   // 打开日志文件（系统默认文本编辑器）
   openLogFile: () => ipcRenderer.invoke('settings:open-log-file'),
   // 打开日志目录（系统文件管理器）
   openLogFolder: () => ipcRenderer.invoke('settings:open-log-folder'),
-  // dsh 运行环境版本信息（当前运行版本 + registry 最新版本）
+  // dsh 运行环境版本信息（当前运行版本 + registry 正式版/预发布版）
   getDshVersionInfo: () => ipcRenderer.invoke('dsh:version-info'),
-  // 离线启动模式：一键更新本地运行环境到最新版（停止服务 → 重装 → 自动重启）
-  updateLocalDsh: () => ipcRenderer.invoke('dsh:update-local'),
+  // 离线启动模式：一键更新本地运行环境（停止服务 → 重装 → 自动重启）
+  // tag: 'latest' 正式版（默认）| 'next' 预发布版
+  updateLocalDsh: (tag) => ipcRenderer.invoke('dsh:update-local', tag),
   // 清除本地运行环境（极速启动固定目录）：停止服务 → 删除目录
   clearLocalRuntime: () => ipcRenderer.invoke('dsh:clear-local'),
   // 本地运行环境信息（路径与是否已安装，即时返回不查网络）
