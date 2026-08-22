@@ -4,6 +4,7 @@
 
 ### 修复本地修复 / 快速启动失败（修复）
 - **`pnpm dlx` 不再传 `--ignore-scripts` 参数**：pnpm v11 的 `dlx` 命令不接受该参数（会直接报 `Unknown option: 'ignore-scripts'`），导致「本地修复」清理坏插件后无法启动服务、「快速启动」也启动失败。已移除命令行参数，改用环境变量 `npm_config_ignore_scripts` 设置（pnpm 兼容 npm 的 `npm_config_*` 环境变量，跳过 koffi 源码编译的效果一致），本地修复 / 快速启动恢复正常
+- **「本地修复 / 自动修复」新增对 `~/.dsh/.credentials.yaml` 的检测与修复**：新版 dsh 要求该文件为「凭据引用 → 非空字符串」的严格扁平映射，旧版写入的 `version`/`schema` 元数据（值为数字/布尔）或 `entries`/`providers` 嵌套结构都会导致服务启动即崩溃（`credentials-local: the value for "version" in ... must be a string`）。该文件位于 `~/.dsh/` 下、不在 `profiles/` 内，此前「本地修复」清理不到，导致修复后反复失败。本版在清理时自动备份并修复该文件（按行移除 version/schema 元数据保留凭据；嵌套结构无法安全保留时移除文件、备份留存），修复后重启即可恢复
 
 ## v1.9.4 (2026-08-21)
 

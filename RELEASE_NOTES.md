@@ -10,12 +10,13 @@
 
 ## 本版更新（v1.9.5）
 
-> 本版修复「本地修复 / 快速启动」在 pnpm v11 下启动失败的问题：此前 `pnpm dlx` 命令传了它不支持的 `--ignore-scripts` 参数，报 `Unknown option: 'ignore-scripts'` 直接退出。
+> 本版修复「本地修复 / 快速启动」在 pnpm v11 下启动失败的问题：此前 `pnpm dlx` 命令传了它不支持的 `--ignore-scripts` 参数，报 `Unknown option: 'ignore-scripts'` 直接退出；并新增对旧版凭据文件（`.credentials.yaml`）的自动修复，解决修复后服务仍反复崩溃的问题。
 
 ### 修复
 
 - **修复本地修复模式无法启动服务**：清理坏插件引用后启动报 `Unknown option: 'ignore-scripts'`（pnpm v11 的 `dlx` 命令不接受该参数，且与清理后重新生成 profile 的新版桌面端冲突）。已移除命令行参数，改为环境变量 `npm_config_ignore_scripts` 设置（pnpm 兼容 npm 配置环境变量，跳过 koffi 源码编译的效果一致），本地修复流程恢复正常
 - **修复快速启动模式启动失败**：`pnpm dlx` 不再传多余的 `--ignore-scripts` 参数，快速启动恢复可用
+- **修复旧版凭据文件导致服务反复崩溃**：新版 dsh 要求 `~/.dsh/.credentials.yaml` 为「凭据引用 → 非空字符串」的严格扁平映射，旧版写入的 `version`/`schema` 元数据（数字/布尔）或 `entries`/`providers` 嵌套结构会让服务启动即崩溃（`credentials-local: the value for "version" must be a string`），且该文件不在 `profiles/` 内、原「本地修复」清理不到。本版在清理时自动备份并修复（按行移除元数据保留凭据；嵌套结构移除文件、备份留存），修复后重启即可恢复
 
 ## 核心特性
 

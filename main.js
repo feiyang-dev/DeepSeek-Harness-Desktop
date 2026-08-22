@@ -1145,6 +1145,59 @@ async function backupDshDataBeforeCleanup(dshHome) {
 }
 
 // ============================================================
+//  修复旧版写入 ~/.dsh/.credentials.yaml 的元数据字段（应急抢修）
+// ============================================================
+// 新版 dsh 的 credentials-local 要求 .credentials.yaml 是「凭据引用 → 非空字符串」
+// 的严格扁平映射，任何多余元数据（如旧版写入的 `version:`，值可能是数字/布尔）
+// 都会让 dsh 服务启动即崩溃：
+//   credentials-local: the value for "version" in ...\.credentials.yaml must be a string
+// 该文件位于 ~/.dsh/ 下（不在 profiles/ 内），原「本地修复」只清理 profiles 清理不到，
+// 导致修复后反复崩溃。本函数备份后移除损坏的元数据，保留真实凭据条目。
+async function repairCredentialsFile() {
+  const dshHome = path.join(os.homedir(), '.dsh');
+  const credFile = path.join(dshHome, '.credentials.yaml');
+  if (!fs.existsSync(credFile)) return false;
+  let text;
+  try {
+    text = fs.readFileSync(credFile, 'utf8');
+  } catch (e) {
+    return false;
+  }
+  // 顶层非注释的旧版元数据：version/schema 行（值未被引号包裹 → 非字符串，必崩）
+  // 以及 entries/providers 嵌套结构（当前版本不接受嵌套，无法安全保留）。
+  const versionLine = /^\s*(version|schema)\s*:(?:\s*$|\s+[^'"])/;
+  const nestedLine = /^\s*(entries|providers)\s*:/;
+  const lines = text.split(/\r?\n/);
+  const isComment = (l) => /^\s*#/.test(l);
+  const hasVersion = lines.some((l) => versionLine.test(l) && !isComment(l));
+  const hasNested = lines.some((l) => nestedLine.test(l) && !isComment(l));
+  if (!hasVersion && !hasNested) return false;
+
+  await backupDshDataBeforeCleanup(dshHome);
+  if (hasNested) {
+    // 嵌套凭据结构：整体不兼容，删除让 dsh 重新生成空凭据文件（原文件已在备份中）
+    try {
+      fs.rmSync(credFile, { force: true });
+      logLine('[清理] ~/.dsh/.credentials.yaml 为旧版嵌套格式（entries/providers），已备份并移除，请重新配置模型 API 凭据');
+      return true;
+    } catch (e) {
+      logLine(`[警告] .credentials.yaml 移除失败：${e.message}`);
+      return false;
+    }
+  }
+  // 仅 version/schema 元数据行：按行移除，保留扁平凭据条目
+  try {
+    const fixed = lines.filter((l) => !versionLine.test(l) || isComment(l)).join('\n').trimEnd() + '\n';
+    fs.writeFileSync(credFile, fixed, 'utf8');
+    logLine('[清理] 检测到 ~/.dsh/.credentials.yaml 含旧版元数据（version/schema），已备份并移除，凭据条目保留');
+    return true;
+  } catch (e) {
+    logLine(`[警告] .credentials.yaml 修复写入失败：${e.message}；可手动删除该文件后重新配置凭据`);
+    return false;
+  }
+}
+
+// ============================================================
 //  外科手术式清理（应急抢修）
 // ============================================================
 // 背景：dsh 的 profile 目录（~/.dsh/profiles/<name>/）下除了 node_modules
@@ -1200,6 +1253,11 @@ async function nukeLocalDshData() {
   } else {
     logLine('[警告] profiles 清理不完整，可能仍有进程占用；请稍后手动删除 ' + profilesDir);
   }
+
+  // 3) 顺带修复旧版写入的 .credentials.yaml（如 version 元数据）。
+  //    该文件不在 profiles/ 内，但新版 dsh 严格要求「ref → 非空字符串」扁平映射，
+  //    旧格式元数据会导致服务启动即崩溃，且清理 profiles 无法解决。
+  await repairCredentialsFile();
   return removed;
 }
 
