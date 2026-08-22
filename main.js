@@ -2031,7 +2031,10 @@ async function crashRetryWaitReady() {
 // 仅当 registry 不可达时，自动改用 --prefer-offline 回退到缓存中已有的版本继续启动。
 function startWebViaPnpm(nodeExe, pnpmCli) {
   const baseEnv = cleanServiceEnv();
-  // pnpm dlx 首次会下载安装 @deepseek-ai/dsh，必须跳过 koffi 源码编译（本机无 CMake）
+  // pnpm dlx 首次会下载安装 @deepseek-ai/dsh，必须跳过 koffi 源码编译（本机无 CMake）。
+  // 注意：只能用环境变量 npm_config_ignore_scripts 设置——pnpm dlx 的命令行解析器不接受
+  // --ignore-scripts 参数（会报 Unknown option: 'ignore-scripts'，导致修复/快速启动失败），
+  // 但 pnpm 兼容 npm 的 npm_config_* 环境变量，该方式同样生效。
   baseEnv.npm_config_ignore_scripts = 'true';
   baseEnv.npm_config_progress = 'true';
   baseEnv.NPM_CONFIG_LOGLEVEL = 'info';
@@ -2043,7 +2046,7 @@ function startWebViaPnpm(nodeExe, pnpmCli) {
   // dsh web 新版默认在就绪后自动打开系统默认浏览器；桌面版自行在 Electron 主窗口
   // 中打开 WebUI，必须显式 --no-open 避免弹出浏览器（旧版 dsh 会忽略未知参数，安全）。
   // --patch 是 dsh launcher 自身参数，必须紧跟 web、放在所有 app 参数（--no-open/--host/--port）之前
-  const args = ['--ignore-scripts', 'dlx', PKG_NAME, 'web', ...remoteControlArgs(), '--no-open', '--host', host, '--port', String(port)];
+  const args = ['dlx', PKG_NAME, 'web', ...remoteControlArgs(), '--no-open', '--host', host, '--port', String(port)];
   // 工作目录决定 dsh 会话数据的归属（历史数据能否读到）。解析一次并缓存，
   // 重试时保持一致，避免反复扫描 sessions 目录。
   const workDir = resolveWorkspaceDir();

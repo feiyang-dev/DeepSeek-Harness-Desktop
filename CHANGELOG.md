@@ -1,5 +1,10 @@
 # DeepSeek Harness 桌面版 - 更新日志
 
+## v1.9.5 (2026-08-22)
+
+### 修复本地修复 / 快速启动失败（修复）
+- **`pnpm dlx` 不再传 `--ignore-scripts` 参数**：pnpm v11 的 `dlx` 命令不接受该参数（会直接报 `Unknown option: 'ignore-scripts'`），导致「本地修复」清理坏插件后无法启动服务、「快速启动」也启动失败。已移除命令行参数，改用环境变量 `npm_config_ignore_scripts` 设置（pnpm 兼容 npm 的 `npm_config_*` 环境变量，跳过 koffi 源码编译的效果一致），本地修复 / 快速启动恢复正常
+
 ## v1.9.4 (2026-08-21)
 
 ### 安装/更新性能大幅提升 —— 全面切换到 pnpm（重大优化）
