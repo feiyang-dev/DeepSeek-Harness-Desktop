@@ -57,6 +57,17 @@
 > dsh plugin --profile web add @feiyang666/dsh-mobile-remote
 > ```
 
+### 数据中心（一站式查看插件数据）
+
+侧边栏新增「数据中心」独立栏目（与首页 / 插件管理 / 设置平级），服务运行期间一站式展示已安装插件的实时数据：
+
+- **用量统计**（dsh-usage-plugin）：今日 / 本周 / 本月 / 累计四周期汇总、缓存命中率、近 30 天按天明细、按模型 / 服务商分布、最近调用记录
+- **余额与凭据**（dsh-usage-plugin）：各余额服务商（DeepSeek / SiliconFlow / DigitalOcean / AMD）的凭据配置状态与余额明细
+- **备份管理**（dsh-vault）：备份份数 / 时间 / 根目录 / 完整历史，一键「立即备份」
+- **远程设备**（dsh-mobile-remote）：在线设备 / 累计心跳 / 局域网与外网隧道状态 / 密码门禁 / 服务运行时信息
+
+数据来自插件自身 HTTP API，桌面端只做「桥接消费」；插件未安装 / 未运行 / 接口不可用时对应区块自动隐藏或显示「未安装」。数据变化通过插件的 **SSE 事件流实时推送**，无需手动刷新；服务停止时自动隐藏。
+
 ### 插件市场（扫描 GitHub 社区插件）
 
 左侧导航新增「插件市场」，扫描 GitHub 上带 `dsh-plugin` 话题的公开仓库（官方推荐的社区插件发现方式）：
@@ -136,6 +147,7 @@ dsh-desktop/
 ├── preload.js           # 安全桥接（模式/进度/日志/状态/设置/更新/插件市场 IPC）
 ├── plugin-manager.js    # 插件管理器（安装/卸载/查询，纯 Node 逻辑）
 ├── plugin-market.js     # 插件市场（扫描 GitHub topic:dsh-plugin，纯 Node 逻辑）
+├── plugin-bridge.js     # 插件数据桥接（消费插件 HTTP API / SSE，纯 Node 逻辑）
 ├── boot/                # 启动引导页（首页 + 左侧导航 + 插件管理页 + 插件市场页 + 设置页 + 进度条 + 日志面板）
 │   ├── boot.html
 │   ├── boot.css

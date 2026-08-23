@@ -153,6 +153,11 @@ function ensureProfile(dir) {
 function validatePkgSpec(input) {
   const raw = String(input || '').trim();
   if (!raw) return { ok: false, error: '请输入要安装的插件包名或安装命令' };
+  // 本地 tarball 路径（可能含空格，如 C:\Users\My Name\Desktop\x.tgz）：
+  // 整体作为单个包 spec 交给 npm install，避免被空格拆成命令而无法安装
+  if (/\.(tgz|tar\.gz)$/i.test(raw) && fs.existsSync(raw)) {
+    return { ok: true, type: 'pkg', pkg: raw };
+  }
   // 按空白拆分为命令 token（数组参数传给 spawn，不经 shell，无注入风险）
   const tokens = raw.split(/\s+/).filter(Boolean);
   const first = tokens[0] || '';
@@ -351,6 +356,31 @@ function applyVaultSchemaPatch(pkgDir) {
 // 与 `dsh plugin --profile <name> add <pkg>` 等价：
 //   1) npm install <pkg>（cwd = profile 目录，使用已选镜像）
 //   2) 包声明 dsh.bundle.patch 时，把包名写入 dsh.profile.bundles
+//
+// 支持本地 tarball（*.tgz / *.tar.gz）安装：pkg 为文件路径时，npm 会把包装进
+// node_modules，但包名不是路径本身。这里通过读取安装后的依赖声明 / 扫描
+// node_modules 解析出真实包名，再按真实包名注册 bundles，避免出现
+// 「装上了却未注册 / 列表里找不到」。
+function resolveInstalledPkgName(dir, installedSpec) {
+  const manifest = readManifest(dir) || {};
+  const deps = (manifest.dependencies && typeof manifest.dependencies === 'object') ? manifest.dependencies : {};
+  // 1) 直接命中包名（常规 npm 包）
+  if (installedPkgDir(dir, installedSpec) && deps[installedSpec]) return installedSpec;
+  // 2) dependencies 里的 file: 引用（本地 tarball 安装后 npm 写成
+  //    "@feiyang666/dsh-mobile-remote": "file:../../xxx.tgz"）→ 取 key 即真实包名
+  for (const name of Object.keys(deps)) {
+    const spec = String(deps[name] || '');
+    if (/\.(tgz|tar\.gz)$/i.test(spec) && installedPkgDir(dir, name)) {
+      return name;
+    }
+  }
+  // 3) 扫描推荐插件目录兜底
+  for (const name of PLUGIN_PKGS) {
+    if (installedPkgDir(dir, name)) return name;
+  }
+  return installedSpec;
+}
+
 async function installPlugin(options) {
   const name = options.pkg || PLUGIN_PKG;
   const dir = profileDir(options.profile);
@@ -383,9 +413,10 @@ async function installPlugin(options) {
     return { ok: false, error: r.error || 'npm install 失败', out: r.out };
   }
 
-  // 注册 bundle 层
+  // 注册 bundle 层（本地 tarball 安装后按真实包名注册）
   const manifest = ensureProfile(dir);
-  const pkgDir = installedPkgDir(dir, name);
+  const installedName = resolveInstalledPkgName(dir, name);
+  const pkgDir = installedPkgDir(dir, installedName);
   let version = '';
   let bundleDeclared = false;
   if (pkgDir) {
@@ -395,19 +426,19 @@ async function installPlugin(options) {
       bundleDeclared = !!(pkg.dsh && pkg.dsh.bundle && pkg.dsh.bundle.patch);
     }
   }
-  if (bundleDeclared && !manifest.dsh.profile.bundles.includes(name)) {
-    manifest.dsh.profile.bundles.push(name);
+  if (bundleDeclared && !manifest.dsh.profile.bundles.includes(installedName)) {
+    manifest.dsh.profile.bundles.push(installedName);
     writeJson(manifestPath(dir), manifest);
   }
   // 已知插件兼容性补丁（dsh-vault schema 修正）：匹配到旧写法时替换，消除工具注册报警
-  if (PLUGIN_VAULT_PKGS.includes(name)) {
+  if (PLUGIN_VAULT_PKGS.includes(installedName)) {
     applyVaultSchemaPatch(pkgDir);
   }
   return {
     ok: true,
-    pkg: name,
+    pkg: installedName,
     installed: !!pkgDir,
-    bundled: manifest.dsh.profile.bundles.includes(name),
+    bundled: manifest.dsh.profile.bundles.includes(installedName),
     version,
     bundleDeclared,
   };

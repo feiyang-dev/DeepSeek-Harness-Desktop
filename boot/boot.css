@@ -435,6 +435,45 @@ html, body {
 .status-title { font-size: 15px; font-weight: 600; }
 .status-desc { font-size: 12.5px; color: var(--muted); margin-top: 3px; font-variant-numeric: tabular-nums; }
 .status-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+/* 插件数据桥接（运行中时展示已装插件：用量/余额/备份/远程状态） */
+.status-plugins {
+  width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  margin-top: 6px;
+}
+.status-plugin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-variant-numeric: tabular-nums;
+}
+.status-plugin-chip b { color: var(--text); font-weight: 600; }
+.status-plugin-chip .chip-tag {
+  background: var(--green);
+  color: var(--bg);
+  font-size: 10px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-weight: 600;
+}
+.status-plugin-chip .chip-warn {
+  background: var(--yellow);
+  color: var(--bg);
+  font-size: 10px;
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-weight: 600;
+}
 /* 首页发现官方新版的一键更新横幅（独立于状态面板，任何状态都显示） */
 .status-update {
   display: flex;
@@ -1480,6 +1519,65 @@ html[data-theme="dark"] .installed-badge.updatable {
 .custom-log-body .log-line.err { color: var(--red); }
 .custom-log-body .log-line.cmd { color: var(--primary); font-weight: 600; }
 .custom-log-body .log-hint { color: var(--muted); font-style: italic; }
+
+/* ============ 数据中心页 ============ */
+.dc-content { display: flex; flex-direction: column; gap: 18px; max-width: 920px; width: 100%; }
+.dc-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.dc-toolbar-hint { font-size: 12px; color: var(--muted); }
+.dc-section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+.dc-section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.dc-section-title { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.dc-section-actions { display: flex; gap: 8px; align-items: center; }
+.dc-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.dc-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.dc-card-label { font-size: 11.5px; color: var(--muted); }
+.dc-card-value { font-size: 17px; font-weight: 700; color: var(--text); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.dc-card-sub { font-size: 11px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.dc-empty {
+  font-size: 13px; color: var(--muted);
+  padding: 18px 0; text-align: center;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
+.dc-table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 8px; }
+.dc-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.dc-table th {
+  text-align: left; font-weight: 600; color: var(--muted);
+  padding: 8px 10px; background: var(--field-bg);
+  border-bottom: 1px solid var(--border); white-space: nowrap;
+}
+.dc-table td { padding: 7px 10px; border-bottom: 1px solid var(--border); color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dc-table tr:last-child td { border-bottom: none; }
+.dc-table tr:hover td { background: var(--field-bg); }
+.dc-table td.num, .dc-table th.num { text-align: right; }
+.dc-badge { display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 4px; white-space: nowrap; }
+.dc-badge.ok { background: var(--accent-weak); color: var(--accent); }
+.dc-badge.warn { background: rgba(255, 156, 0, 0.15); color: var(--yellow); }
+.dc-badge.err { background: rgba(230, 80, 80, 0.15); color: var(--red); }
+.dc-badge.muted { background: var(--field-bg); color: var(--muted); border: 1px solid var(--border); }
+.dc-bar { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; min-width: 70px; }
+.dc-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.dc-detail-row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; font-size: 12.5px; }
+.dc-detail-row .k { color: var(--muted); flex-shrink: 0; }
+.dc-detail-row .v { color: var(--text); font-variant-numeric: tabular-nums; text-align: right; word-break: break-all; }
+.dc-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.dc-monospace { font-family: Consolas, 'Courier New', monospace; }
+.dc-error { color: var(--red); font-size: 12.5px; word-break: break-word; }
+.dc-loading { font-size: 13px; color: var(--muted); padding: 20px 0; text-align: center; }
+@media (max-width: 720px) {
+  .dc-grid-2 { grid-template-columns: 1fr; }
+  .dc-toolbar { flex-direction: column; align-items: flex-start; }
+}
 
 /* ============ 响应式 ============ */
 @media (max-width: 720px) {

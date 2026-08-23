@@ -34,6 +34,12 @@
           </span>
           <span data-i18n="navMarket">插件市场</span>
         </button>
+        <button class="nav-item" id="navData" data-view="data" title="数据中心">
+          <span class="nav-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+          </span>
+          <span data-i18n="navData">数据中心</span>
+        </button>
         <button class="nav-item" id="navSettings" data-view="settings" title="设置">
           <span class="nav-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -114,6 +120,8 @@
             <button class="btn btn-danger" id="btnStopService" data-i18n="btnStopService">停止运行</button>
             <button class="btn" id="btnRestartService" data-i18n="btnRestartService">重新运行</button>
           </div>
+          <!-- 插件数据桥接（运行中时展示已装插件：用量/余额/备份/远程状态） -->
+          <div class="status-plugins" id="statusPlugins" hidden></div>
         </div>
 
         <div class="mode-cards" id="modeCards">
@@ -298,6 +306,15 @@
             </div>
           </section>
         </div>
+      </div>
+
+      <!-- ============ 数据中心页 ============ -->
+      <div class="view" id="dataScreen" hidden>
+        <div class="page-head">
+          <h1 class="page-title" data-i18n="dataTitle">数据中心</h1>
+          <p class="page-subtitle" data-i18n="dataSubtitle">聚合展示已安装插件（用量 / 余额 / 备份 / 远程）的详细数据，内容由插件实时提供</p>
+        </div>
+        <div id="dataContent"></div>
       </div>
 
       <!-- ============ 插件市场页 ============ -->

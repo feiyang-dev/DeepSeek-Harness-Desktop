@@ -57,6 +57,17 @@ The home screen has a "Plugin Management" entry (left navigation) that opens a d
 > dsh plugin --profile web add @feiyang666/dsh-mobile-remote
 > ```
 
+### Data Center (One-Stop Plugin Data)
+
+A dedicated "Data Center" section in the left navigation (on par with Home / Plugin Management / Settings) shows real-time data from installed plugins while the service is running:
+
+- **Usage stats** (dsh-usage-plugin): today / week / month / all-time summaries, cache-hit rate, last-30-days daily breakdown, per-model / per-provider distribution, recent call records
+- **Balances & credentials** (dsh-usage-plugin): credential status and balance details for each provider (DeepSeek / SiliconFlow / DigitalOcean / AMD)
+- **Backup management** (dsh-vault): backup count / time / root directory / full history, one-click "Back Up Now"
+- **Remote devices** (dsh-mobile-remote): online devices / total heartbeats / LAN & external tunnel status / password gate / runtime info
+
+All data comes from the plugins' own HTTP APIs — the desktop app only "bridges and consumes" it; cards/blocks auto-hide or show "Not installed" when a plugin is missing, not running, or unreachable. Data changes are pushed in real time over each plugin's **SSE event stream**, no manual refresh needed; the section hides automatically when the service stops.
+
 ### Plugin Market (Scan GitHub Community Plugins)
 
 A "Plugin Market" entry in the left navigation scans GitHub public repos tagged with `dsh-plugin` (the officially recommended way to discover community plugins):
@@ -136,6 +147,7 @@ dsh-desktop/
 ├── preload.js           # Secure bridge (mode/progress/log/status/settings/update/plugin market IPC)
 ├── plugin-manager.js    # Plugin manager (install/uninstall/status, pure Node logic)
 ├── plugin-market.js     # Plugin market (scans GitHub topic:dsh-plugin, pure Node logic)
+├── plugin-bridge.js     # Plugin data bridge (consumes plugin HTTP APIs / SSE, pure Node logic)
 ├── boot/                # Bootstrap page (home + left nav + plugin management + plugin market + settings + progress bar + log panel)
 │   ├── boot.html
 │   ├── boot.css

@@ -12,6 +12,7 @@ const crypto = require('node:crypto');
 const pluginMgr = require('./plugin-manager.js');
 const pluginMarket = require('./plugin-market.js');
 const dshSettings = require('./dsh-settings.js');
+const pluginBridge = require('./plugin-bridge.js');
 
 // ============================================================
 //  全局状态
@@ -2398,6 +2399,7 @@ async function quitApp() {
   // 修复"停止运行有效但退出 APP 无作用"的问题。
   const forceTimer = setTimeout(() => { app.exit(0); }, 5000);
   if (forceTimer && typeof forceTimer.unref === 'function') forceTimer.unref();
+  stopDataChangeWatcher();
   try {
     await stopWebService();
     await stopDevWebWatcher();
@@ -3207,6 +3209,8 @@ app.whenReady().then(() => {
   });
   createBootWindow();
   createTray();
+  // 数据中心数据变化检测（事件推送）：数据变化时通知前端静默更新
+  startDataChangeWatcher();
 
   // App 启动瞬间即自动终结旧服务（不依赖模式选择）
   cleanupOldService();
@@ -3254,6 +3258,81 @@ ipcMain.handle('boot:quit', async () => {
 ipcMain.handle('service:get-state', async () => {
   return { phase: bootPhase, ...serviceState };
 });
+
+// 插件数据桥接（只读快照）：服务运行期间从已安装插件拉取
+// 用量 / 余额 / 备份 / 远程状态。插件未安装时对应字段 available:false，
+// 由 UI 优雅降级（不显示或提示去插件管理页安装），不影响主流程。
+// 桌面端不重复实现插件逻辑——能力都在插件包里，桌面端只消费其 HTTP API。
+ipcMain.handle('plugin-bridge:snapshot', async (_e, payload) => {
+  if (!serviceState.running) {
+    return { usage: null, balance: null, vault: null, remote: null };
+  }
+  const p = Number((payload && payload.port) || port) || DEFAULT_PORT;
+  return pluginBridge.getPluginSnapshots(p);
+});
+
+// 数据中心：完整详细快照（用量明细/余额与凭据/备份列表含大小/远程设备详情）
+ipcMain.handle('plugin-bridge:data-center', async (_e, payload) => {
+  if (!serviceState.running) return null;
+  const p = Number((payload && payload.port) || port) || DEFAULT_PORT;
+  return pluginBridge.getDataCenterSnapshot(p);
+});
+
+// 数据中心：立即手动备份（调用 dsh-vault 的 backup）
+ipcMain.handle('plugin-bridge:trigger-backup', async (_e, payload) => {
+  if (!serviceState.running) return { ok: false, error: '服务未运行' };
+  const p = Number((payload && payload.port) || port) || DEFAULT_PORT;
+  return pluginBridge.triggerBackup(p);
+});
+
+// ---- 数据中心数据变化推送（SSE 即时推送 + 指标对比兜底） ----
+// 1) SSE 即时推送：服务运行期间长连接订阅三个插件的 /events 事件流，
+//    插件在数据变化瞬间推送（新用量记录 / 备份完成 / 设备心跳等），收到即广播，
+//    延迟毫秒级。断线自动重连。
+// 2) 指标对比兜底：后台低频对比关键指标（调用次数 / 备份份数 / 在线设备数 /
+//    服务状态），覆盖 SSE 未触达的变化（如服务停止），仅在变化时推送。
+// 前端收到「data-center:changed」才静默更新；数据不变时不打扰。
+const DATA_CHANGE_INTERVAL_MS = 20000;
+let dataChangeTimer = null;
+let dataEventSub = null;
+
+function startDataChangeWatcher() {
+  stopDataChangeWatcher();
+  const tick = () => {
+    try {
+      // 同步 SSE 订阅状态：服务运行中建立连接，停止则销毁
+      syncDataEventSubscription();
+      pluginBridge.detectDataChange(port, serviceState.running)
+        .then((changed) => { if (changed) broadcastDataCenterChanged(); })
+        .catch(() => { /* 检测失败静默跳过 */ });
+    } catch (e) { /* ignore */ }
+  };
+  tick(); // 立即执行一次（同步订阅 + 建立指标基线）
+  dataChangeTimer = setInterval(tick, DATA_CHANGE_INTERVAL_MS);
+}
+
+function stopDataChangeWatcher() {
+  if (dataChangeTimer) { clearInterval(dataChangeTimer); dataChangeTimer = null; }
+  stopDataEventSubscription();
+}
+
+function syncDataEventSubscription() {
+  if (serviceState.running && !dataEventSub) {
+    dataEventSub = pluginBridge.createEventSubscription(port, () => broadcastDataCenterChanged());
+  } else if (!serviceState.running && dataEventSub) {
+    stopDataEventSubscription();
+  }
+}
+
+function stopDataEventSubscription() {
+  if (dataEventSub) { dataEventSub(); dataEventSub = null; }
+}
+
+function broadcastDataCenterChanged() {
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (!w.isDestroyed()) w.webContents.send('data-center:changed', { at: Date.now() });
+  }
+}
 
 ipcMain.handle('service:stop', async () => {
   await stopService();

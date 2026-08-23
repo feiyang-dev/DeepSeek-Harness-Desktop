@@ -57,6 +57,18 @@ contextBridge.exposeInMainWorld('dsh', {
   // ---- 服务控制（首页"正在运行中"控制台） ----
   // 查询服务状态（phase + 运行信息）
   getServiceState: () => ipcRenderer.invoke('service:get-state'),
+  // 插件数据桥接快照：用量 / 余额 / 备份 / 远程状态（服务运行期间有效，插件未装时 available:false）
+  getPluginSnapshot: (port) => ipcRenderer.invoke('plugin-bridge:snapshot', { port }),
+  // 数据中心完整快照：用量明细 / 余额与凭据 / 备份列表 / 远程设备详情
+  getDataCenter: (port) => ipcRenderer.invoke('plugin-bridge:data-center', { port }),
+  // 数据中心：立即手动备份
+  triggerBackup: (port) => ipcRenderer.invoke('plugin-bridge:trigger-backup', { port }),
+  // 订阅「插件数据已变化」推送（主进程检测到数据变化时触发），返回取消订阅函数
+  onDataCenterChanged: (cb) => {
+    const listener = (_e, payload) => { if (typeof cb === 'function') cb(payload); };
+    ipcRenderer.on('data-center:changed', listener);
+    return () => ipcRenderer.removeListener('data-center:changed', listener);
+  },
   // 停止运行（终止服务 + 关闭 WebUI 窗口）
   stopService: () => ipcRenderer.invoke('service:stop'),
   // 重新运行（用上次所选模式重新启动）

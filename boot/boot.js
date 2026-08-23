@@ -6,6 +6,8 @@ const progressScreen = document.getElementById('progressScreen');
 const pluginScreen = document.getElementById('pluginScreen');
 const marketScreen = document.getElementById('marketScreen');
 const settingsScreen = document.getElementById('settingsScreen');
+const dataScreen = document.getElementById('dataScreen');
+const dataContent = document.getElementById('dataContent');
 const shell = document.getElementById('shell');
 const sidebar = document.getElementById('sidebar');
 const appTitleHome = document.getElementById('appTitleHome');
@@ -23,6 +25,7 @@ const statusPanel = document.getElementById('statusPanel');
 const statusDot = document.getElementById('statusDot');
 const statusTitle = document.getElementById('statusTitle');
 const statusDesc = document.getElementById('statusDesc');
+const statusPlugins = document.getElementById('statusPlugins');
 const btnOpenMain = document.getElementById('btnOpenMain');
 const btnStopService = document.getElementById('btnStopService');
 const btnRestartService = document.getElementById('btnRestartService');
@@ -97,6 +100,7 @@ const marketPageInfo = document.getElementById('marketPageInfo');
 const navHome = document.getElementById('navHome');
 const navPlugin = document.getElementById('navPlugin');
 const navMarket = document.getElementById('navMarket');
+const navData = document.getElementById('navData');
 const navSettings = document.getElementById('navSettings');
 const sidebarDot = document.getElementById('sidebarDot');
 const sidebarStatusText = document.getElementById('sidebarStatusText');
@@ -259,6 +263,7 @@ function showScreen(name) {
   pluginScreen.hidden = name !== 'plugin';
   marketScreen.hidden = name !== 'market';
   settingsScreen.hidden = name !== 'settings';
+  dataScreen.hidden = name !== 'data';
   // 侧栏：所有页面（含启动进度页）都常驻显示，保证启动过程中也能看到导航
   if (sidebar) sidebar.hidden = false;
   if (shell) shell.classList.remove('no-sidebar');
@@ -347,7 +352,7 @@ function openHomeByPhase() {
 
 // 高亮侧栏当前项
 function syncNavActive(name) {
-  const map = { home: navHome, plugin: navPlugin, market: navMarket, settings: navSettings };
+  const map = { home: navHome, plugin: navPlugin, market: navMarket, data: navData, settings: navSettings };
   for (const k in map) {
     if (map[k]) map[k].classList.toggle('active', k === name);
   }
@@ -461,6 +466,7 @@ function renderHome(phase, service) {
     setSidebarStatus(true);
     startUptimeTicker(service);
     refreshHomeUpdate();
+    startPluginInfo();
   } else if (phase === 'stopped') {
     homeSubtitle.textContent = currentLanguage === 'en' ? 'Service stopped' : '服务已停止';
     homeHint.textContent = currentLanguage === 'en' ? 'Restart it, or choose another launch mode' : '可重新运行，或选择其他启动模式';
@@ -485,8 +491,65 @@ function renderHome(phase, service) {
     statusPanel.hidden = true;
     setSidebarStatus(false);
     stopUptimeTicker();
+    stopPluginInfo();
     refreshHomeUpdate();
   }
+}
+
+// ============ 插件数据桥接（首页运行状态控制台） ============
+// 服务运行期间每 60s 从已安装插件拉取用量 / 余额 / 备份 / 远程设备快照。
+// 插件未安装或接口不可用时对应字段 available:false，UI 降级隐藏（不显示空卡片）。
+let pluginInfoTimer = null;
+const PLUGIN_INFO_INTERVAL_MS = 60000;
+
+function startPluginInfo() {
+  stopPluginInfo();
+  refreshPluginInfo();
+  pluginInfoTimer = setInterval(refreshPluginInfo, PLUGIN_INFO_INTERVAL_MS);
+}
+
+function stopPluginInfo() {
+  if (pluginInfoTimer) { clearInterval(pluginInfoTimer); pluginInfoTimer = null; }
+  if (statusPlugins) { statusPlugins.hidden = true; statusPlugins.innerHTML = ''; }
+}
+
+function money(n) {
+  const v = Number(n);
+  if (!isFinite(v)) return '—';
+  return v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+async function refreshPluginInfo() {
+  if (!statusPlugins || !window.dsh || !window.dsh.getPluginSnapshot) return;
+  let snap;
+  try { snap = await window.dsh.getPluginSnapshot(); } catch (e) { return; }
+  if (!snap) return;
+  const u = snap.usage, b = snap.balance, v = snap.vault, r = snap.remote;
+  const any = (u && u.available) || (b && b.available) || (v && v.available) || (r && r.available);
+  if (!any) { statusPlugins.hidden = true; statusPlugins.innerHTML = ''; return; }
+  const en = currentLanguage === 'en';
+  const chip = (label, html) => '<span class="status-plugin-chip"><span class="chip-tag">' + label + '</span>' + html + '</span>';
+  const parts = [];
+  if (u && u.available) {
+    const t = u.today;
+    const html = t
+      ? (en ? '今日 <b>¥' + money(t.cost) + '</b> · ' + t.calls + ' 次' : '今日 <b>¥' + money(t.cost) + '</b> · ' + t.calls + ' 次')
+      : (en ? '近 7 天 <b>¥' + money(u.last7.cost) + '</b>' : '近 7 天 <b>¥' + money(u.last7.cost) + '</b>');
+    parts.push(chip(en ? 'Usage' : '用量', html));
+  }
+  if (b && b.available) {
+    const cur = b.currency || '¥';
+    parts.push(chip(en ? 'Balance' : '余额', '<b>' + money(b.balance) + '</b> ' + cur));
+  }
+  if (v && v.available) {
+    const at = v.lastBackupAt ? new Date(v.lastBackupAt).toLocaleString() : (en ? 'none' : '暂无');
+    parts.push(chip(en ? 'Backup' : '备份', (en ? '共 <b>' + v.backupCount + '</b> 份 · 最近 ' : '共 <b>' + v.backupCount + '</b> 份 · 最近 ') + at));
+  }
+  if (r && r.available) {
+    parts.push(chip(en ? 'Remote' : '远程', (en ? '在线设备 <b>' + r.deviceCount + '</b> 台' : '在线设备 <b>' + r.deviceCount + '</b> 台')));
+  }
+  statusPlugins.innerHTML = parts.join('');
+  statusPlugins.hidden = false;
 }
 
 // ============ 模式选择 ============
@@ -1319,10 +1382,330 @@ marketNextBtn.addEventListener('click', () => {
   loadMarket();
 });
 
+// ============ 数据中心页 ============
+// 聚合展示已安装插件（dsh-usage-plugin / dsh-vault / dsh-mobile-remote）的详细数据。
+// 数据全部来自插件 HTTP API（桌面端只做桥接与展示聚合，不重复实现插件逻辑）；
+// 插件未安装 / 服务未运行时对应区块显示"未安装"提示或隐藏，不影响主流程。
+let dataBusy = false;
+let dataCache = null; // 最近一次成功获取的数据快照（再次进入先用缓存秒显，避免"重新加载"）
+// 数据变化事件监听：主进程通过 SSE / 指标对比检测到插件数据变化时推送，前端静默更新
+let dcChangedOff = null;
+
+function openDataCenter() {
+  showScreen('data');
+  // 有缓存：先用缓存立即渲染（无 loading），再后台静默更新；
+  // 无缓存：首次进入显示 loading
+  if (dataCache) {
+    renderDataCenterHtml(dataCache);
+    renderDataCenter(false);
+  } else {
+    renderDataCenter(true);
+  }
+  initDataCenterEvents();
+}
+
+// 订阅主进程的「插件数据已变化」推送（SSE 即时 / 指标对比兜底触发）。页面可见时静默更新。
+function initDataCenterEvents() {
+  if (dcChangedOff || !window.dsh || !window.dsh.onDataCenterChanged) return;
+  dcChangedOff = window.dsh.onDataCenterChanged(() => {
+    if (dataScreen && !dataScreen.hidden && !dataBusy) renderDataCenter(false);
+  });
+}
+
+// showLoading=true 显示 loading（首次进入 / 手动刷新）；false 静默更新（SSE 事件触发）。
+// 静默更新不显示 loading、保留滚动位置；服务停止时无论是否静默都显示提示。
+async function renderDataCenter(showLoading) {
+  if (!dataContent) return;
+  if (dataBusy) return;
+  const en = currentLanguage === 'en';
+  const hasContent = dataContent.innerHTML !== '' && !/dc-loading|dc-empty/.test(dataContent.innerHTML);
+  // 仅当"需要显示 loading 且当前没有可展示内容"时才显示 loading，避免打断阅读
+  if (showLoading && !hasContent) {
+    dataContent.innerHTML = '<div class="dc-loading">' + (en ? 'Loading...' : '正在加载插件数据...') + '</div>';
+  }
+  dataBusy = true;
+  let snap = null;
+  if (window.dsh && window.dsh.getDataCenter) {
+    try { snap = await window.dsh.getDataCenter(); } catch (e) { snap = null; }
+  }
+  dataBusy = false;
+  if (!snap) {
+    // 服务未运行：总是给出提示（静默场景下服务停止用户也应当知道）
+    dataContent.innerHTML = '<div class="dc-empty">' + (en ? 'Service is not running. Start the service first.' : '服务未运行，无法获取插件数据。请先启动服务。') + '</div>';
+    dataCache = null;
+    return;
+  }
+  dataCache = snap;
+  renderDataCenterHtml(snap);
+}
+
+// 渲染完整页面（工具栏 + 四个区块），重建 DOM 前记录滚动位置、重建后恢复，避免视觉跳动
+function renderDataCenterHtml(snap) {
+  const scroller = (dataContent.scrollHeight > dataContent.clientHeight)
+    ? dataContent
+    : (document.scrollingElement || document.documentElement);
+  const prevTop = scroller ? scroller.scrollTop : 0;
+  const en = currentLanguage === 'en';
+  const lastUpdated = new Date().toLocaleTimeString();
+  const parts = [];
+  parts.push(
+    '<div class="dc-toolbar">' +
+      '<div class="dc-toolbar-hint">' + (en
+        ? 'Real-time data from installed plugins.'
+        : '数据由已安装插件实时提供。') + ' ' +
+        (en ? 'Updated at ' : '更新于 ') + '<span class="dc-monospace">' + lastUpdated + '</span></div>' +
+      '<div class="dc-section-actions"><button class="btn" id="btnDataRefresh">' + (en ? 'Refresh now' : '立即刷新') + '</button></div>' +
+    '</div>'
+  );
+  parts.push(renderUsageSection(snap.usage, en));
+  parts.push(renderBalanceSection(snap.balances, en));
+  parts.push(renderVaultSection(snap.vault, en));
+  parts.push(renderRemoteSection(snap.remote, en));
+  dataContent.innerHTML = parts.join('');
+  if (scroller) { try { scroller.scrollTop = prevTop; } catch (e) { /* ignore */ } }
+  const btn = document.getElementById('btnDataRefresh');
+  if (btn) btn.addEventListener('click', () => renderDataCenter(true));
+  const btnBackup = document.getElementById('btnDataBackup');
+  if (btnBackup) btnBackup.addEventListener('click', onDataBackup);
+}
+
+async function onDataBackup() {
+  const en = currentLanguage === 'en';
+  const btn = document.getElementById('btnDataBackup');
+  if (!btn || !window.dsh || !window.dsh.triggerBackup) return;
+  btn.disabled = true;
+  btn.textContent = en ? 'Backing up...' : '备份中...';
+  let res = null;
+  try { res = await window.dsh.triggerBackup(); } catch (e) { res = { ok: false, error: (e && e.message) || String(e) }; }
+  btn.disabled = false;
+  if (res && res.ok) {
+    btn.textContent = en ? 'Done' : '完成';
+    setTimeout(() => renderDataCenter(), 600);
+  } else {
+    btn.textContent = en ? 'Retry' : '重试';
+    window.alert((en ? 'Backup failed: ' : '备份失败：') + ((res && res.error) || ''));
+  }
+}
+
+// ---- 数据中心渲染辅助 ----
+function escHtml(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function fmtInt(n) { return String(Math.round(Number(n) || 0)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+function fmtMoney(n) {
+  const v = Number(n);
+  if (!isFinite(v) || v === 0) return '0.00';
+  return v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+}
+function fmtTime(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return String(ts);
+  return d.toLocaleString();
+}
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return v + ' B';
+  if (v < 1048576) return (v / 1024).toFixed(1) + ' KB';
+  if (v < 1073741824) return (v / 1048576).toFixed(2) + ' MB';
+  return (v / 1073741824).toFixed(2) + ' GB';
+}
+function hitBar(rate) {
+  const p = Math.max(0, Math.min(1, Number(rate) || 0));
+  return '<div class="dc-bar"><div class="dc-bar-fill" style="width:' + (p * 100).toFixed(1) + '%"></div></div>';
+}
+function dcSection(bodyHtml) { return '<div class="dc-section">' + bodyHtml + '</div>'; }
+function dcSectionHead(titleHtml, actionsHtml) {
+  return '<div class="dc-section-head"><div class="dc-section-title">' + titleHtml + '</div>' + (actionsHtml ? '<div class="dc-section-actions">' + actionsHtml + '</div>' : '') + '</div>';
+}
+function dcCard(label, value, sub) {
+  return '<div class="dc-card"><div class="dc-card-label">' + label + '</div><div class="dc-card-value">' + value + '</div>' + (sub ? '<div class="dc-card-sub">' + sub + '</div>' : '') + '</div>';
+}
+function dcTable(headers, rows) {
+  if (!rows) return '<div class="dc-empty">—</div>';
+  return '<div class="dc-table-wrap"><table class="dc-table"><thead><tr>' + headers.map((h) => '<th>' + h + '</th>').join('') + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+function dcMissing(pkg) {
+  const en = currentLanguage === 'en';
+  return dcSection(dcSectionHead(en ? 'Plugin not installed' : '未安装插件') + '<div class="dc-empty">' + (en ? 'Install ' : '安装 ') + '<code>' + escHtml(pkg) + '</code>' + (en ? ' to enable this section. It remains fully usable independently.' : ' 后可在此查看数据。该插件仍可独立使用。') + '</div>');
+}
+
+// ---- 用量统计 ----
+function renderUsageSection(u, en) {
+  if (!u || !u.available) return dcMissing('dsh-usage-plugin');
+  const p = u.period || {};
+  const m = fmtMoney, i = fmtInt;
+  const cards = [
+    dcCard(en ? 'Today' : '今日消耗', p.today ? m(p.today.autoCost) : '—', p.today ? (i(p.today.calls) + ' ' + (en ? 'calls' : '次调用')) : (en ? 'no calls yet' : '暂无调用')),
+    dcCard(en ? 'This week' : '本周消耗', p.week ? m(p.week.autoCost) : '—', p.week ? (i(p.week.calls) + ' ' + (en ? 'calls' : '次调用')) : '—'),
+    dcCard(en ? 'This month' : '本月消耗', p.month ? m(p.month.autoCost) : '—', p.month ? (i(p.month.calls) + ' ' + (en ? 'calls' : '次调用')) : '—'),
+    dcCard(en ? 'Total' : '累计消耗', m(p.all ? p.all.autoCost : 0), i(p.all ? p.all.calls : 0) + ' ' + (en ? 'calls' : '次调用')),
+    dcCard(en ? 'Cache hit rate' : '缓存命中率', (u.overallHitRate * 100).toFixed(1) + '%', (en ? 'cache-read / (input+cache-read) tokens' : '缓存读取 /（输入+缓存读取）token')),
+  ];
+  const dayRows = (u.days30 || []).map((d) =>
+    '<tr><td>' + d.day + '</td><td class="num">' + i(d.calls) + '</td><td class="num">' + i(d.miss) + '</td><td class="num">' + i(d.hit) + '</td><td class="num">' + i(d.write) + '</td><td class="num">' + i(d.out) + '</td><td class="num">' + i(d.reason) + '</td><td class="num">' + m(d.autoCost) + '</td></tr>'
+  ).join('');
+  const modelRows = (u.byModel || []).map((r) =>
+    '<tr><td>' + escHtml(r.key) + '</td><td class="num">' + i(r.calls) + '</td><td class="num">' + i(r.inputTokens) + '</td><td class="num">' + i(r.cacheReadTokens) + '</td><td class="num">' + i(r.cacheWriteTokens) + '</td><td class="num">' + i(r.outputTokens) + '</td><td class="num">' + i(r.reasoningTokens) + '</td><td>' + hitBar(r.hitRate) + '</td><td class="num">' + m(r.autoCost) + '</td></tr>'
+  ).join('');
+  const providerRows = (u.byProvider || []).map((r) =>
+    '<tr><td>' + escHtml(r.key) + '</td><td class="num">' + i(r.calls) + '</td><td class="num">' + i(r.inputTokens) + '</td><td class="num">' + i(r.cacheReadTokens) + '</td><td class="num">' + i(r.cacheWriteTokens) + '</td><td class="num">' + i(r.outputTokens) + '</td><td class="num">' + i(r.reasoningTokens) + '</td><td>' + hitBar(r.hitRate) + '</td><td class="num">' + m(r.autoCost) + '</td></tr>'
+  ).join('');
+  const recentRows = (u.recent || []).slice(0, 50).map((r) =>
+    '<tr><td>' + fmtTime(r.time) + '</td><td>' + escHtml(r.model) + '</td><td>' + escHtml(r.provider) + '</td><td class="num">' + i(r.inputTokens) + '</td><td class="num">' + i(r.cacheReadTokens) + '</td><td class="num">' + i(r.outputTokens) + '</td><td class="num">' + i(r.reasoningTokens) + '</td><td class="num">' + m(r.autoCost) + '</td></tr>'
+  ).join('');
+  const sub = (t) => '<div style="font-size:13px;font-weight:600;margin:14px 0 8px">' + t + '</div>';
+  return dcSection(
+    dcSectionHead(en ? 'Usage Statistics' : '用量统计') +
+    '<div class="dc-cards">' + cards.join('') + '</div>' +
+    sub(en ? 'Last 30 days' : '近 30 天明细') + dcTable(
+      [en ? 'Date' : '日期', en ? 'Calls' : '调用', 'Input', 'Cache Read', 'Cache Write', 'Output', 'Reasoning', en ? 'Cost' : '成本'],
+      dayRows
+    ) +
+    sub(en ? 'By model' : '按模型分布') + dcTable(
+      [en ? 'Model' : '模型', en ? 'Calls' : '调用', 'Input', 'Cache Read', 'Cache Write', 'Output', 'Reasoning', 'Hit %', en ? 'Cost' : '成本'],
+      modelRows
+    ) +
+    sub(en ? 'By provider' : '按服务商分布') + dcTable(
+      [en ? 'Provider' : '服务商', en ? 'Calls' : '调用', 'Input', 'Cache Read', 'Cache Write', 'Output', 'Reasoning', 'Hit %', en ? 'Cost' : '成本'],
+      providerRows
+    ) +
+    sub(en ? 'Recent records (latest 50)' : '最近调用记录（最近 50 条）') + dcTable(
+      [en ? 'Time' : '时间', en ? 'Model' : '模型', en ? 'Provider' : '服务商', 'Input', 'Cache Read', 'Output', 'Reasoning', en ? 'Cost' : '成本'],
+      recentRows
+    )
+  );
+}
+
+// ---- 余额与凭据 ----
+function renderBalanceSection(balances, en) {
+  if (!balances || !balances.available) return dcMissing('dsh-usage-plugin');
+  const list = balances.providers || [];
+  if (!list.length) {
+    return dcSection(dcSectionHead(en ? 'Balance & Credentials' : '余额与凭据') + '<div class="dc-empty">' + (en ? 'No balance providers available.' : '暂无余额服务商。') + '</div>');
+  }
+  const cards = list.map((p) => {
+    const cs = p.credentialStatus;
+    const bl = p.balance;
+    let badge = '', body = '';
+    if (bl && bl.ok === true) {
+      // 余额查询成功 → 优先展示余额（即使 credentialStatus 因"不支持凭据管理"返回 ok:false）
+      badge = '<span class="dc-badge ok">' + (en ? 'Available' : '可用') + '</span>';
+      body =
+        '<div class="dc-card-value">' + fmtMoney(bl.totalBalance) + ' ' + escHtml(bl.currency || '') + '</div>' +
+        ((bl.details && bl.details.length) ? bl.details.map((d) => '<div class="dc-detail-row"><span class="k">' + escHtml(d.label) + '</span><span class="v">' + escHtml(d.value) + '</span></div>').join('') : '') +
+        '<div class="dc-card-sub">' + (en ? 'Checked: ' : '查询时间：') + fmtTime(bl.queriedAt) + '</div>';
+    } else if (p.queryMode === 'unsupported') {
+      badge = '<span class="dc-badge muted">' + (en ? 'Unsupported' : '不支持') + '</span>';
+      body = '<div class="dc-detail-row"><span class="k">' + (en ? 'Note' : '说明') + '</span><span class="v">' + escHtml(p.credentialHint || '') + '</span></div>';
+    } else if (cs && (cs.ok === true && cs.configured === false)) {
+      badge = '<span class="dc-badge warn">' + (en ? 'Not configured' : '未配置') + '</span>';
+      body = '<div class="dc-detail-row"><span class="k">' + (en ? 'Hint' : '提示') + '</span><span class="v">' + escHtml((cs.error) || p.credentialHint || '') + '</span></div>';
+    } else if (bl) {
+      // 查询已执行但失败
+      badge = '<span class="dc-badge err">' + (en ? 'Error' : '失败') + '</span>';
+      body = '<div class="dc-error">' + escHtml((bl.error) || '') + '</div>';
+    } else {
+      badge = '<span class="dc-badge muted">—</span>';
+      body = '<div class="dc-detail-row"><span class="k">' + (en ? 'Hint' : '提示') + '</span><span class="v">' + escHtml(p.credentialHint || '') + '</span></div>';
+    }
+    return '<div class="dc-card"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><span class="dc-card-label">' + escHtml(p.name) + '</span>' + badge + '</div>' + body + '</div>';
+  }).join('');
+  return dcSection(dcSectionHead(en ? 'Balance & Credentials' : '余额与凭据') + '<div class="dc-cards">' + cards + '</div>');
+}
+
+// ---- 备份管理 ----
+function renderVaultSection(vault, en) {
+  if (!vault || !vault.available) return dcMissing('dsh-vault');
+  const backups = vault.backups || [];
+  const rows = backups.map((b) =>
+    '<tr><td>' + escHtml(b.name) + '</td><td>' + fmtTime(b.createdAt) + '</td><td class="num">' + fmtInt(b.sessionCount) + '</td><td>' + (b.hasUsage ? '<span class="dc-badge ok">' + (en ? 'usage' : '含用量') + '</span>' : '<span class="dc-badge muted">—</span>') + '</td><td class="num">' + fmtBytes(b.size) + '</td></tr>'
+  ).join('');
+  const last = vault.lastBackup;
+  const cards = [
+    dcCard(en ? 'Backup count' : '备份份数', String(backups.length), ''),
+    dcCard(en ? 'Latest backup' : '最近备份', last ? fmtTime(last.at) : (en ? 'none' : '暂无'), last ? ('<span class="dc-badge ok">' + (en ? 'included usage data' : '含用量数据') + '</span>') : ''),
+    dcCard(en ? 'Backup root' : '备份目录', '', escHtml(vault.backupRoot)),
+  ];
+  return dcSection(
+    dcSectionHead(en ? 'Backup Management (dsh-vault)' : '备份管理（dsh-vault）', '<button class="btn" id="btnDataBackup">' + (en ? 'Backup now' : '立即备份') + '</button>') +
+    '<div class="dc-cards">' + cards.join('') + '</div>' +
+    '<div style="font-size:13px;font-weight:600;margin:14px 0 8px">' + (en ? 'Backup history' : '备份历史') + '</div>' + dcTable(
+      [en ? 'Name' : '名称', en ? 'Time' : '时间', en ? 'Sessions' : '会话数', en ? 'Usage data' : '含用量', en ? 'Size' : '大小'],
+      rows
+    )
+  );
+}
+
+// ---- 远程设备 ----
+function renderRemoteSection(remote, en) {
+  if (!remote || !remote.available) return dcMissing('dsh-mobile-remote');
+  const s = remote.status || {};
+  const ext = s.external || {};
+  const auth = remote.auth;
+  const devRows = (s.devices || []).map((d) =>
+    '<tr><td>' + escHtml(d.name) + '</td><td>' + escHtml(d.os) + '</td><td>' + escHtml(d.browser) + '</td><td>' + escHtml(d.screen || '') + '</td><td>' + escHtml(d.ip || '') + '</td><td>' + (d.online ? '<span class="dc-badge ok">' + (en ? 'Online' : '在线') + '</span>' : '<span class="dc-badge muted">' + (en ? 'Offline' : '离线') + '</span>') + '</td><td class="num">' + fmtInt(d.beatCount) + '</td><td>' + fmtTime(d.lastSeen) + '</td></tr>'
+  ).join('');
+  const lan = (s.lanAddresses && s.lanAddresses.length) ? s.lanAddresses.map((a) => '<div class="dc-monospace" style="word-break:break-all">' + escHtml(a) + '</div>').join('') : (en ? '—' : '无');
+  const extStatus = ext.enabled
+    ? '<span class="dc-badge ok">' + (en ? 'Online' : '在线') + '</span>'
+    : (ext.status === 'connecting' ? '<span class="dc-badge warn">' + (en ? 'Connecting' : '连接中') + '</span>' : '<span class="dc-badge muted">' + (en ? 'Offline' : '离线') + '</span>');
+  const authBadge = !auth
+    ? '<span class="dc-badge muted">—</span>'
+    : (auth.enabled ? '<span class="dc-badge ok">' + (en ? 'Enabled' : '已开启') + '</span>' : '<span class="dc-badge muted">' + (en ? 'Disabled' : '未开启') + '</span>');
+  const detail = (k, v) => '<div class="dc-detail-row"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>';
+  const cards = [
+    dcCard(en ? 'Online devices' : '在线设备', fmtInt(s.deviceCount || 0), (en ? 'ever seen: ' : '累计设备：') + fmtInt(s.totalDevicesEver || 0) + ' · ' + (en ? 'beats: ' : '累计心跳：') + fmtInt(s.totalHeartbeats || 0)),
+    dcCard(en ? 'LAN access' : '局域网访问', (en ? 'On' : '开启'), s.url ? escHtml(s.url) : ''),
+    dcCard(en ? 'External tunnel' : '外网隧道', extStatus, ext.url ? '<div class="dc-monospace" style="word-break:break-all">' + escHtml(ext.url) + '</div>' : (ext.error ? escHtml(String(ext.error).slice(0, 120)) : '')),
+    dcCard(en ? 'Password gate' : '密码门禁', authBadge, ''),
+  ];
+  const extDetails =
+    '<div class="dc-grid-2">' +
+      '<div>' +
+        (en ? 'External tunnel details' : '外网隧道详情') +
+        '<div style="margin-top:6px">' +
+          detail(en ? 'Status' : '状态', extStatus) +
+          detail(en ? 'Domain' : '域名', escHtml(ext.domain || '—')) +
+          detail('URL', ext.url ? '<div class="dc-monospace" style="word-break:break-all">' + escHtml(ext.url) + '</div>' : '—') +
+          detail('Port', ext.tunnelPort || '—') +
+          detail('frpc', ext.frpcVersion || '—') +
+          detail('PID', ext.pid || '—') +
+          detail(en ? 'Started at' : '启动时间', fmtTime(ext.startedAt)) +
+          detail('Bind code', ext.bindCodeShort || '—') +
+          (ext.error ? detail(en ? 'Error' : '错误', '<span class="dc-error">' + escHtml(String(ext.error).slice(0, 200)) + '</span>') : '') +
+        '</div>' +
+      '</div>' +
+      '<div>' +
+        (en ? 'Service runtime' : '服务运行时') +
+        '<div style="margin-top:6px">' +
+          detail('dsh', (s.dsh && s.dsh.version) ? escHtml(s.dsh.version) : '—') +
+          detail('Node', s.nodeVersion || '—') +
+          detail(en ? 'Uptime' : '运行时长', fmtInt(s.uptime || 0) + 's') +
+          detail(en ? 'Host' : '主机', escHtml((s.runtime && s.runtime.platform) || '—')) +
+          detail(en ? 'Arch' : '架构', escHtml((s.runtime && s.runtime.arch) || '—')) +
+          detail(en ? 'CPU model' : 'CPU', escHtml((s.runtime && s.runtime.cpuModel) || '—')) +
+          detail(en ? 'Total memory' : '总内存', (s.runtime && s.runtime.totalmem) ? fmtBytes(s.runtime.totalmem) : '—') +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  return dcSection(
+    dcSectionHead(en ? 'Remote Devices (dsh-mobile-remote)' : '远程设备（dsh-mobile-remote）') +
+    '<div class="dc-cards">' + cards.join('') + '</div>' +
+    '<div style="font-size:13px;font-weight:600;margin:14px 0 8px">' + (en ? 'Online devices' : '在线设备列表') + '</div>' + dcTable(
+      [en ? 'Device' : '设备', 'OS', en ? 'Browser' : '浏览器', en ? 'Screen' : '屏幕', 'IP', en ? 'Status' : '状态', en ? 'Beats' : '心跳', en ? 'Last seen' : '最近活跃'],
+      devRows
+    ) +
+    '<div style="font-size:13px;font-weight:600;margin:14px 0 8px">' + (en ? 'LAN addresses' : '局域网地址') + '</div><div class="remote-lan-item">' + lan + '</div>' +
+    '<div style="margin-top:12px">' + extDetails + '</div>'
+  );
+}
+
 // ============ 侧栏导航 ============
 navHome.addEventListener('click', openHomePage);
 navPlugin.addEventListener('click', openPluginPage);
 navMarket.addEventListener('click', openMarketPage);
+navData.addEventListener('click', openDataCenter);
 navSettings.addEventListener('click', openSettings);
 
 // ============ 设置页 ============
@@ -1394,7 +1777,10 @@ const I18N = {
     navHome: '首页',
     navPlugin: '插件管理',
     navMarket: '插件市场',
+    navData: '数据中心',
     navSettings: '设置',
+    dataTitle: '数据中心',
+    dataSubtitle: '聚合展示已安装插件（用量 / 余额 / 备份 / 远程）的详细数据，内容由插件实时提供',
     statusStopped: '未运行',
     statusStarting: '正在启动...',
     statusRunning: '运行中',
@@ -1558,7 +1944,10 @@ const I18N = {
     navHome: 'Home',
     navPlugin: 'Plugins',
     navMarket: 'Market',
+    navData: 'Data Center',
     navSettings: 'Settings',
+    dataTitle: 'Data Center',
+    dataSubtitle: 'Detailed data from installed plugins (Usage / Balance / Backup / Remote), provided in real time',
     statusStopped: 'Stopped',
     statusStarting: 'Starting...',
     statusRunning: 'Running',
