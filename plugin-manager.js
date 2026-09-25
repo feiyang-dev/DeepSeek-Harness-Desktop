@@ -18,6 +18,8 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+// 插件与 DSH 运行时的版本兼容性（对齐官方 0.1.7 的 peer 检查 + compatibility.json 例外）
+const compat = require('./plugin-compat.js');
 
 // 用量与消耗插件：新包名（推荐安装用）
 const PLUGIN_PKG = '@feiyang666/dsh-usage-plugin';
@@ -41,7 +43,8 @@ const RECOMMENDED_PLUGINS = [
   {
     pkg: PLUGIN_PKG,
     title: '用量与消耗插件',
-    desc: '用量统计 / 余额查询 / 导出报表',
+    // 1.17.0 起支持 DeepSeek V4.1 Flash（deepseek-flash）新模型与 2026-09-10 12:00 起生效的新峰谷价
+    desc: '用量统计 / V4.1 峰谷价计费 / 余额查询 / 导出报表',
   },
   {
     pkg: PLUGIN_VAULT_PKG,
@@ -133,6 +136,9 @@ function ensureProfile(dir) {
   if (!Array.isArray(manifest.dsh.profile.bundles)) manifest.dsh.profile.bundles = [];
   writeJson(manifestPath(dir), manifest);
   if (!fs.existsSync(patchPath(dir))) {
+    // 注意：官方 dsh 0.1.7 起该文件同时承载用户设置（- id: ui-theme）、Agent 预设
+    // （- id: preset-*）与插件开关，因此只能"缺失时创建"，绝不能整体覆盖；
+    // 且必须包含顶层条目（空文件/仅注释会让 profile 启动失败）。
     fs.writeFileSync(patchPath(dir), '# user patch layer for this profile\n[]\n', 'utf8');
   }
   return manifest;
@@ -195,7 +201,7 @@ function validatePkgSpec(input) {
 // 别名感知：查询某包时，若其「旧名别名」已安装（如数据保险箱
 // @feiyang666/deepseekharnessdesktop-vault -> @feiyang666/dsh-vault），
 // 状态仍判为已安装，并返回 legacyAlias 供前端提示「可迁移到新包名」。
-function pluginStatus(dir, pkg) {
+function pluginStatus(dir, pkg, opts) {
   const name = pkg || PLUGIN_PKG;
   const manifest = readManifest(dir) || {};
   const bundles = (manifest.dsh && manifest.dsh.profile && manifest.dsh.profile.bundles) || [];
@@ -229,7 +235,20 @@ function pluginStatus(dir, pkg) {
     version,
     bundleDeclared,
     dshHome: dshHomeDir(),
+    // 与当前 dsh 运行时的兼容性（未知运行时版本时为 null）
+    compat: compatOf(pkgDir, opts),
   };
+}
+
+// 计算某个已安装插件目录的兼容性（供状态查询 / 列表复用）。
+// opts: { runtimeVersion, exemptions }
+function compatOf(pkgDir, opts) {
+  if (!pkgDir || !opts || !opts.runtimeVersion) return null;
+  try {
+    return compat.inspectPlugin(pkgDir, opts.runtimeVersion, opts.exemptions || {});
+  } catch (e) {
+    return null;
+  }
 }
 
 // 查询某包对应的旧名/新名别名（双向）：
@@ -244,7 +263,7 @@ function legacyAliasFor(name) {
 }
 
 // 列出 profile 中用户安装的插件（含依赖中声明且在 node_modules 中有实体的包）
-function listInstalledPlugins(dir) {
+function listInstalledPlugins(dir, opts) {
   const manifest = readManifest(dir) || {};
   const deps = (manifest.dependencies && typeof manifest.dependencies === 'object') ? manifest.dependencies : {};
   const bundles = (manifest.dsh && manifest.dsh.profile && manifest.dsh.profile.bundles) || [];
@@ -261,6 +280,8 @@ function listInstalledPlugins(dir) {
       installed: !!deps[name],
       bundled: bundles.includes(name),
       bundleDeclared: !!(p && p.dsh && p.dsh.bundle && p.dsh.bundle.patch),
+      // 与当前 dsh 运行时的兼容性（0.1.7 起官方会拒绝加载不兼容插件）
+      compat: compatOf(pkgDir, opts),
     });
   }
   list.sort((a, b) => a.pkg.localeCompare(b.pkg));
@@ -349,6 +370,79 @@ function applyVaultSchemaPatch(pkgDir) {
   return true;
 }
 
+// dsh-vault 在 0.1.7 下的已知问题（桌面端侧兜底修正，幂等、只在命中旧写法时改写）：
+//   detectDshHome() 的第一优先级是「settings.documentPath 的父目录」——
+//   0.1.7 之前它是 ~/.dsh/settings.yaml（父目录 = ~/.dsh ✅）；
+//   0.1.7 起设置迁到 profile 的 cordis.patch.yml，父目录变成
+//   ~/.dsh/profiles/web（❌），于是备份源目录被拼成 profiles/web/sessions、
+//   profiles/web/storages、profiles/web/profiles（都不存在 → robocopy 报 0x2），
+//   备份根也被推导成 ~/.dsh/profiles/.dsh-backups（历史备份读不到、还可能被
+//   「本地修复」删掉）。
+// 修正原则：只在文档确实是 settings.* 时采用其父目录为 dsh home，否则继续走
+//   插件自带的 DSH_HOME 环境变量 / ~/.dsh 兜底 —— 对 0.1.6 及更早版本行为不变。
+const VAULT_HOME_PATCH_MARK = '[dsh-desktop patch]';
+
+function applyVaultHomePatch(pkgDir) {
+  if (!pkgDir) return false;
+  const indexFile = path.join(pkgDir, 'lib', 'index.js');
+  if (!fs.existsSync(indexFile)) return false;
+  let text;
+  try {
+    text = fs.readFileSync(indexFile, 'utf8');
+  } catch (e) {
+    return false;
+  }
+  if (text.includes(VAULT_HOME_PATCH_MARK)) return false; // 已修正过
+
+  // 命中：if (doc) { dshHome = dirname(doc); return dshHome }
+  const re = /([ \t]*)if \(doc\) \{\r?\n([ \t]*)dshHome = dirname\(doc\)\r?\n([ \t]*)return dshHome\r?\n([ \t]*)\}/;
+  const m = re.exec(text);
+  if (!m) return false; // 结构变化 → 安全跳过，不做猜测
+
+  const indent = m[1];
+  const inner = m[2];
+  const replacement = [
+    `${indent}// ${VAULT_HOME_PATCH_MARK} dsh 0.1.7 起 settings.documentPath 指向 profile 的`,
+    `${indent}// cordis.patch.yml，其父目录并不是 dsh home（会让备份源目录与备份根全部错位）。`,
+    `${indent}// 因此只在文档确实是 settings.* 时采用其父目录，否则继续走 DSH_HOME / ~/.dsh 兜底。`,
+    `${indent}if (doc && /settings\\.(ya?ml|json)$/i.test(String(doc))) {`,
+    `${inner}dshHome = dirname(doc)`,
+    `${m[3]}return dshHome`,
+    `${indent}}`,
+  ].join('\n');
+
+  const next = text.replace(re, replacement);
+  if (next === text) return false;
+  try {
+    fs.writeFileSync(indexFile, next, 'utf8');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// 对已知插件应用全部桌面端侧修正（目前仅 dsh-vault 的两处）。
+// 返回 { schema, home }，true 表示这次确实改写了文件。
+function applyKnownPluginPatches(pkgDir) {
+  return {
+    schema: applyVaultSchemaPatch(pkgDir),
+    home: applyVaultHomePatch(pkgDir),
+  };
+}
+
+// 扫描 profile 中已安装的 vault（新名 / 旧名），就地应用已知修正。
+// 用于「插件安装后」与「服务启动前」两条路径：已装插件不必重装即可修好。
+function patchInstalledVaultPlugins(dir) {
+  const done = [];
+  for (const name of PLUGIN_VAULT_PKGS) {
+    const pkgDir = installedPkgDir(dir, name);
+    if (!pkgDir) continue;
+    const r = applyKnownPluginPatches(pkgDir);
+    if (r.schema || r.home) done.push({ pkg: name, ...r });
+  }
+  return done;
+}
+
 // ------------------------------------------------------------
 //  安装
 // ------------------------------------------------------------
@@ -430,10 +524,14 @@ async function installPlugin(options) {
     manifest.dsh.profile.bundles.push(installedName);
     writeJson(manifestPath(dir), manifest);
   }
-  // 已知插件兼容性补丁（dsh-vault schema 修正）：匹配到旧写法时替换，消除工具注册报警
+  // 已知插件兼容性/正确性补丁（dsh-vault：schema 写法 + dsh home 推导）：
+  // 匹配到旧写法时替换，已是新写法时安全跳过
   if (PLUGIN_VAULT_PKGS.includes(installedName)) {
-    applyVaultSchemaPatch(pkgDir);
+    applyKnownPluginPatches(pkgDir);
   }
+  // 安装后复核与当前 dsh 运行时的兼容性：0.1.7 起不兼容的插件会被官方拒绝
+  // 加载（组合包被跳过 / 行变成 disabled），这里必须如实告诉用户。
+  const info = compatOf(pkgDir, options);
   return {
     ok: true,
     pkg: installedName,
@@ -441,6 +539,7 @@ async function installPlugin(options) {
     bundled: manifest.dsh.profile.bundles.includes(installedName),
     version,
     bundleDeclared,
+    compat: info,
   };
 }
 
@@ -660,6 +759,10 @@ function removeLegacyPatchRow(cordisPath, pkgName) {
   }
   if (changed) {
     let result = out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+    // 官方 dsh 0.1.7 起：空文件或仅含注释的 profile patch 会让 profile 启动失败，
+    // 因此清理后必须保证文件里仍有顶层条目（没有条目就补一个空序列 `[]`）。
+    const hasEntries = /^\s*-\s/m.test(result) || /^\s*\[\s*\]\s*$/m.test(result);
+    if (!hasEntries) result = result.length > 0 ? result + '\n\n[]' : '[]';
     if (result.length > 0) result += '\n';
     fs.writeFileSync(cordisPath, result, 'utf8');
   }
@@ -688,4 +791,7 @@ module.exports = {
   validatePkgSpec,
   removeLegacyPatchRow,
   applyVaultSchemaPatch,
+  applyVaultHomePatch,
+  applyKnownPluginPatches,
+  patchInstalledVaultPlugins,
 };

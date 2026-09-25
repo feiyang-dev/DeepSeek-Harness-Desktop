@@ -22,10 +22,22 @@ const TIMEOUT_MS = 5000;
 // 余额查询可能触发插件的 node 子进程网络请求，单独放宽超时
 const BALANCE_TIMEOUT_MS = 15000;
 
+// 新版 dsh Web UI 浏览器会话认证：/api 前缀下的插件接口（dsh-vault 等）同样要求
+// 携带有效浏览器会话 cookie，否则返回 401。主进程先用「dsh web 打印的带 token URL」
+// 换取 cookie（见 main.js exchangeBrowserSessionCookie），这里统一注入到每次请求。
+let authCookie = '';
+function setAuthCookie(cookie) {
+  authCookie = cookie ? String(cookie).trim() : '';
+}
+
 function httpJsonRequest(opts) {
   const { host = DEFAULT_HOST, port, path: reqPath, method = 'GET', body, timeoutMs = TIMEOUT_MS } = opts || {};
   return new Promise((resolve) => {
     const payload = body === undefined ? null : JSON.stringify(body);
+    const headers = payload
+      ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
+      : {};
+    if (authCookie) headers['Cookie'] = authCookie;
     let req;
     try {
       req = http.request({
@@ -33,9 +45,7 @@ function httpJsonRequest(opts) {
         port: Number(port) || 3080,
         path: reqPath,
         method,
-        headers: payload
-          ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) }
-          : {},
+        headers,
         timeout: timeoutMs,
       }, (res) => {
         let data = '';
@@ -465,7 +475,8 @@ function createEventSubscription(port, cb) {
     if (aborted) return;
     let req;
     try {
-      req = http.request({ host: DEFAULT_HOST, port, path: endpoint, method: 'GET', timeout: 0 }, (res) => {
+      const headers = authCookie ? { Cookie: authCookie } : {};
+      req = http.request({ host: DEFAULT_HOST, port, path: endpoint, method: 'GET', headers, timeout: 0 }, (res) => {
         if (res.statusCode !== 200) {
           res.resume();
           schedule(endpoint, 5000);
@@ -511,6 +522,7 @@ function createEventSubscription(port, cb) {
 
 module.exports = {
   httpJsonRequest,
+  setAuthCookie,
   getDataCenterSnapshot,
   triggerBackup,
   getPluginSnapshots,

@@ -406,6 +406,20 @@ function startUptimeTicker(service) {
 // 数据不依赖服务运行状态，直接调 getDshVersionInfo() 实时查询 npm 正式版 / 预发布版。
 let lastHomeVerCheck = 0;   // 上次网络查询时间戳（节流用）
 let lastHomeVerInfo = null; // 缓存最近一次版本信息
+let lastDshVerInfo = null;  // 设置页最近一次版本信息（判断"更新 vs 切换回退"用）
+
+// 候选版本是否「严格新于」当前运行版本（结果由主进程用 semver 计算后给出：
+// latestNewer / nextNewer）。缺失该字段时回退到旧的字符串不等判断，保持向后兼容。
+// 重要：官方正式版可能低于用户正在运行的预发布版（0.1.7-rc.2 vs 0.1.5-rc.3），
+// 不能用"不相等"当成"有新版"，否则会把降级当成更新呈现。
+function isNewerFlag(info, which) {
+  if (!info) return false;
+  const key = which === 'next' ? 'nextNewer' : 'latestNewer';
+  if (typeof info[key] === 'boolean') return info[key];
+  const cand = which === 'next' ? info.next : info.latest;
+  const cur = info.running;
+  return !!cand && (cur === null || cur === undefined || cand !== cur);
+}
 
 function refreshHomeUpdate() {
   if (!statusUpdate || !statusUpdateText) return;
@@ -427,8 +441,9 @@ function renderHomeUpdate(info) {
   // 仅本地运行环境已安装才提供更新入口（更新即重装本地 dsh）
   if (!info || !info.ok || !info.localExists) { statusUpdate.hidden = true; return; }
   const current = info.running || null;
-  const hasStable = !!info.latest && (current === null || info.latest !== current);
-  const hasNext = !!info.next && info.next !== info.latest && (current === null || info.next !== current);
+  // 只在确有「更新」（严格新于当前版本）时显示；当前高于正式版渠道时不显示
+  const hasStable = !!info.latest && isNewerFlag(info, 'latest');
+  const hasNext = !!info.next && info.next !== info.latest && isNewerFlag(info, 'next');
   if (!hasStable && !hasNext) { statusUpdate.hidden = true; return; }
   statusUpdate.hidden = false;
   const texts = [];
@@ -586,18 +601,24 @@ btnOpenMain.addEventListener('click', () => { if (window.dsh) window.dsh.showMai
 // tag: 'latest' 正式版 | 'next' 预发布版
 // 更新进行中标志：抑制 resyncProgressScreen 把进度页拉回控制台（详见该函数）
 let updatingLocal = false;
-function requestUpdateLocal(tag, btn) {
+function requestUpdateLocal(tag, btn, opts) {
   if (!window.dsh || !window.dsh.updateLocalDsh) return;
   const isNext = tag === 'next';
+  // switchBack：当前版本比目标渠道更新，这次操作是「切换/回退」而不是「更新」
+  const switchBack = !!(opts && opts.switchBack);
   // 记录来源屏幕：设置页发起失败时回到设置页，否则回到首页
   const fromSettings = !!(settingsScreen && !settingsScreen.hidden);
-  if (!window.confirm(isNext
+  if (!window.confirm(switchBack
     ? (currentLanguage === 'en'
-      ? 'Install the pre-release (next) version? It may be less stable. The service will restart automatically.'
-      : '确定要安装预发布版吗？该版本可能不够稳定。服务会自动重启。')
-    : (currentLanguage === 'en'
-      ? 'Update the local dsh runtime to the latest stable version? The service will restart automatically.'
-      : '确定要将本地运行环境更新到官方最新正式版吗？服务会自动重启。'))) return;
+      ? 'Your current dsh version is newer than the stable release. Switch back to the stable version? You may lose features that only exist in the newer channel. The service will restart automatically.'
+      : '当前 dsh 版本比正式版更新，切换回正式版可能缺少当前通道的新功能。确定要切换吗？服务会自动重启。')
+    : (isNext
+      ? (currentLanguage === 'en'
+        ? 'Install the pre-release (next) version? It may be less stable. The service will restart automatically.'
+        : '确定要安装预发布版吗？该版本可能不够稳定。服务会自动重启。')
+      : (currentLanguage === 'en'
+        ? 'Update the local dsh runtime to the latest stable version? The service will restart automatically.'
+        : '确定要将本地运行环境更新到官方最新正式版吗？服务会自动重启。')))) return;
   // 更新期间禁止 resyncProgressScreen 把进度页拉回"正在运行中"控制台
   // （服务此刻仍在运行，不抑制的话点击更新后界面会"毫无反应"）
   updatingLocal = true;
@@ -635,12 +656,14 @@ function requestUpdateLocal(tag, btn) {
       failBack((res.error) || (currentLanguage === 'en' ? 'Update failed, see log' : '更新失败，请查看日志'));
       return;
     }
-    // 更新完成但未自动重启（服务未运行 / 非本地模式运行）：回到原屏幕提示
+    // 更新完成但未自动重启：只剩「快速 / 源码模式的服务正在运行」这一种情况
+    // （服务未运行时主进程已直接以「极速启动」把服务拉起来）。当前服务不受影响，
+    // 重新运行后即使用新版本。
     if (res && res.ok && res.restarted === false) {
       updatingLocal = false;
       failBack(currentLanguage === 'en'
-        ? 'Update completed. Restart the service to use the new version.'
-        : '更新完成，重新运行服务即可使用新版本', 'ok');
+        ? 'Update completed. The running service is unaffected; it will use the new version after a restart.'
+        : '更新完成。当前服务继续运行不受影响，重新运行后即使用新版本', 'ok');
       return;
     }
     // 更新成功且已自动重启：主进程会走 run() 重启流程，进度事件自动接管界面
@@ -803,6 +826,18 @@ function buildRecItem(p) {
   } else {
     parts.push(t('pluginNotInstalled'));
   }
+  // 与当前 dsh 运行时的兼容性（dsh 0.1.7 起官方会拒绝加载不兼容插件）
+  const incompat = !!(p.compat && p.compat.constrained && !p.compat.allowed);
+  if (p.compat && p.compat.constrained) {
+    if (p.compat.compatible || p.compat.exempted) {
+      parts.push(currentLanguage === 'en' ? 'compatible with this dsh' : '与当前 dsh 兼容');
+    } else {
+      parts.push(currentLanguage === 'en'
+        ? 'INCOMPATIBLE with this dsh (will not load)'
+        : '与当前 dsh 不兼容（官方会拒绝加载）');
+    }
+  }
+  if (incompat) item.classList.add('incompat');
   status.textContent = parts.join(' · ');
   info.appendChild(name);
   info.appendChild(desc);
@@ -880,7 +915,7 @@ function loadPluginStatus() {
       list = [{
         pkg: '@feiyang666/dsh-usage-plugin',
         title: '用量与消耗插件',
-        desc: '用量统计 / 余额查询 / 导出报表',
+        desc: '用量统计 / V4.1 峰谷价计费 / 余额查询 / 导出报表',
         installed: st.installed,
         version: st.version,
         bundled: st.bundled,
@@ -946,6 +981,14 @@ function loadInstalledList() {
         b.textContent = t('pluginBundled');
         meta.appendChild(b);
       }
+      // 不兼容标记：dsh 0.1.7 起官方会在启动时拒绝加载并跳过该组合包
+      const incompat = !!(p.compat && p.compat.constrained && !p.compat.allowed);
+      if (incompat && op !== 'uninstall') {
+        const ic = document.createElement('span');
+        ic.className = 'installed-badge incompat';
+        ic.textContent = currentLanguage === 'en' ? 'incompatible' : '与当前 dsh 不兼容';
+        meta.appendChild(ic);
+      }
       // 更新状态标记
       if (upd && op !== 'uninstall') {
         if (upd.outdated) {
@@ -986,6 +1029,15 @@ function loadInstalledList() {
         mgBtn.disabled = !!op || pluginBusy;
         mgBtn.addEventListener('click', () => doPluginInstall(p.pkg));
         actions.appendChild(mgBtn);
+      }
+      // 不兼容的插件：提供「允许此版本」（写入 profile 的 compatibility.json）
+      if (incompat && op !== 'uninstall') {
+        const exBtn = document.createElement('button');
+        exBtn.className = 'settings-btn warn';
+        exBtn.textContent = currentLanguage === 'en' ? 'Allow this version' : '允许此版本';
+        exBtn.disabled = !!op || pluginBusy;
+        exBtn.addEventListener('click', () => grantExemptionFor(p));
+        actions.appendChild(exBtn);
       }
       const btn = document.createElement('button');
       btn.className = 'settings-btn';
@@ -1038,22 +1090,101 @@ function checkPluginUpdates() {
   });
 }
 
+// 授予「精确版本例外」：等价于官方 `dsh plugin allow-version`，
+// 写入 profile 的 compatibility.json —— 只对这一个精确版本 + 当前运行时生效。
+function grantExemptionFor(p) {
+  if (!window.dsh || !window.dsh.setVersionExemption) return Promise.resolve(false);
+  const pkgName = (p.compat && p.compat.pkg) || p.pkg;
+  const version = (p.compat && p.compat.version) || p.version;
+  const target = pkgName + '@' + version;
+  const msg = currentLanguage === 'en'
+    ? 'Allow ' + target + ' to run on the current dsh runtime?\n\nIt declares incompatible dsh peers and may crash or lose data. The exemption is stored in the profile compatibility.json and applies only to this exact version; upgrade the plugin or dsh and it stops applying.'
+    : '确定允许 ' + target + ' 在当前 dsh 运行时上运行吗？\n\n该插件声明了不兼容的 dsh peer，可能导致崩溃或数据丢失。例外会写入 profile 的 compatibility.json，且只对这个精确版本生效（插件升级或 dsh 升级后失效）。';
+  if (!window.confirm(msg)) return Promise.resolve(false);
+  return window.dsh.setVersionExemption({ target, enabled: true, acceptRisk: true }).then((r) => {
+    if (r && r.ok) {
+      showCustomNote(currentLanguage === 'en'
+        ? 'Exemption granted. Restart the service to apply.'
+        : '已授予版本例外，重启服务后生效。', 'ok');
+      refreshPluginLists();
+      return true;
+    }
+    showCustomNote((currentLanguage === 'en' ? 'Failed to grant exemption: ' : '授予例外失败：') + ((r && r.error) || 'unknown'), 'err');
+    return false;
+  }).catch(() => false);
+}
+
+// 安装被官方兼容性检查拦下（不兼容且未授予例外）时的引导：
+// 用户确认风险 → 写入例外 → 带 acceptRisk 重试安装。
+function handleIncompatibleInstall(pkg, r) {
+  const target = r.target || pkg;
+  const msg = currentLanguage === 'en'
+    ? 'This plugin is NOT compatible with the current dsh runtime:\n\n' + (r.incompatibilityMessage || r.error || '') + '\n\nGrant an exact-version exemption and install anyway?'
+    : '该插件与当前 dsh 运行时声明不兼容：\n\n' + (r.incompatibilityMessage || r.error || '') + '\n\n是否授予「精确版本例外」并继续安装？';
+  if (!window.confirm(msg)) return Promise.resolve(false);
+  return window.dsh.setVersionExemption({ target, enabled: true, acceptRisk: true }).then((ex) => {
+    if (!ex || !ex.ok) {
+      showCustomNote((currentLanguage === 'en' ? 'Failed to grant exemption: ' : '授予例外失败：') + ((ex && ex.error) || 'unknown'), 'err');
+      return false;
+    }
+    showCustomNote(currentLanguage === 'en'
+      ? 'Exemption granted; installing anyway...'
+      : '已授予版本例外，继续安装（风险自负）...', '');
+    return doPluginInstall(pkg, true);
+  }).catch(() => false);
+}
+
+// 自定义安装/市场安装被兼容性检查拦下：确认风险 → 写例外 → 带 acceptRisk 重试。
+// retry 缺省为「再走一次自定义安装」；市场安装传入自己的重试函数。
+function grantIncompatibleCustom(val, r, retry) {
+  const target = r.target || val;
+  const msg = currentLanguage === 'en'
+    ? 'This plugin is NOT compatible with the current dsh runtime:\n\n' + (r.incompatibilityMessage || r.error || '') + '\n\nGrant an exact-version exemption and install anyway?'
+    : '该插件与当前 dsh 运行时声明不兼容：\n\n' + (r.incompatibilityMessage || r.error || '') + '\n\n是否授予「精确版本例外」并继续安装？';
+  if (!window.confirm(msg)) return Promise.resolve(false);
+  return window.dsh.setVersionExemption({ target, enabled: true, acceptRisk: true }).then((ex) => {
+    if (!ex || !ex.ok) {
+      showCustomNote((currentLanguage === 'en' ? 'Failed to grant exemption: ' : '授予例外失败：') + ((ex && ex.error) || 'unknown'), 'err');
+      return false;
+    }
+    showCustomNote(currentLanguage === 'en'
+      ? 'Exemption granted; installing anyway...'
+      : '已授予版本例外，继续安装（风险自负）...', '');
+    const run = typeof retry === 'function'
+      ? retry
+      : () => window.dsh.installCustomPlugin(val, true);
+    return Promise.resolve(run()).then((rr) => {
+      if (rr && rr.ok) {
+        showCustomNote('安装完成！点击下方「立即重启服务」即可生效。', 'ok');
+        customPkgInput.value = '';
+        restartHintCard.hidden = false;
+      }
+      refreshPluginLists();
+      return !!(rr && rr.ok);
+    });
+  }).catch(() => false);
+}
+
 // 安装推荐插件（pkg 缺省为 @feiyang666/dsh-usage-plugin）
-function doPluginInstall(pkg) {
-  if (!window.dsh || !window.dsh.installPlugin) return;
-  if (opFor({ pkg })) return; // 该插件已在安装/卸载中，忽略重复点击
+// acceptRisk=true 表示用户已确认「与当前 dsh 运行时版本不兼容」的风险
+function doPluginInstall(pkg, acceptRisk) {
+  if (!window.dsh || !window.dsh.installPlugin) return Promise.resolve(false);
+  if (opFor({ pkg })) return Promise.resolve(false); // 该插件已在安装/卸载中，忽略重复点击
   localBusy.set(pkg, 'install');
   refreshPluginLists();
-  window.dsh.installPlugin(pkg).then(() => {
+  return window.dsh.installPlugin(pkg, acceptRisk === true).then((r) => {
     localBusy.delete(pkg);
     // 安装（更新）完成后清除该插件的更新缓存，避免「更新」按钮残留
     if (pluginUpdateCheck && pluginUpdateCheck[pkg]) {
       delete pluginUpdateCheck[pkg];
     }
     refreshPluginLists();
+    if (r && r.incompatible && r.canExempt) return handleIncompatibleInstall(pkg, r);
+    return !!(r && r.ok);
   }).catch(() => {
     localBusy.delete(pkg);
     refreshPluginLists();
+    return false;
   });
 }
 
@@ -1074,6 +1205,10 @@ function doCustomInstall() {
       showCustomNote('安装完成！点击下方「立即重启服务」即可生效。', 'ok');
       customPkgInput.value = '';
       restartHintCard.hidden = false;
+    } else if (r && r.incompatible && r.canExempt) {
+      // 官方兼容性检查拦下：引导授予「精确版本例外」后重试
+      setPluginBusy(true);
+      grantIncompatibleCustom(val, r).then(() => setPluginBusy(false));
     } else if (r && r.error) {
       // 主进程已通过 plugin:event 推送详细错误，这里补充提示
       showCustomNote('安装失败：' + r.error + '（可查看命令行日志）', 'err');
@@ -1273,6 +1408,15 @@ function installMarketPlugin(p, btn) {
     if (r && r.ok) {
       loadMarket();
       loadInstalledList();
+    } else if (r && r.incompatible && r.canExempt) {
+      // 官方兼容性检查拦下：引导授予精确版本例外后重试安装
+      if (btn) btn.disabled = true;
+      localBusy.set(p.pkgName, 'install');
+      grantIncompatibleCustom(p.pkgName, r, () => window.dsh.installMarketPlugin(p.pkgName, true)).then(() => {
+        localBusy.delete(p.pkgName);
+        loadMarket();
+        loadInstalledList();
+      });
     } else if (btn) {
       btn.disabled = false;
     }
@@ -1646,7 +1790,10 @@ function renderRemoteSection(remote, en) {
   const devRows = (s.devices || []).map((d) =>
     '<tr><td>' + escHtml(d.name) + '</td><td>' + escHtml(d.os) + '</td><td>' + escHtml(d.browser) + '</td><td>' + escHtml(d.screen || '') + '</td><td>' + escHtml(d.ip || '') + '</td><td>' + (d.online ? '<span class="dc-badge ok">' + (en ? 'Online' : '在线') + '</span>' : '<span class="dc-badge muted">' + (en ? 'Offline' : '离线') + '</span>') + '</td><td class="num">' + fmtInt(d.beatCount) + '</td><td>' + fmtTime(d.lastSeen) + '</td></tr>'
   ).join('');
-  const lan = (s.lanAddresses && s.lanAddresses.length) ? s.lanAddresses.map((a) => '<div class="dc-monospace" style="word-break:break-all">' + escHtml(a) + '</div>').join('') : (en ? '—' : '无');
+  // 手机访问地址：展示裸地址（插件已在服务端接管 / 自动完成认证，无需带 token）
+  const lan = (s.lanAddresses && s.lanAddresses.length)
+    ? s.lanAddresses.map((a) => '<div class="dc-monospace" style="word-break:break-all">' + escHtml('http://' + a + ':' + (s.port || 3080)) + '</div>').join('')
+    : (en ? '—' : '无');
   const extStatus = ext.enabled
     ? '<span class="dc-badge ok">' + (en ? 'Online' : '在线') + '</span>'
     : (ext.status === 'connecting' ? '<span class="dc-badge warn">' + (en ? 'Connecting' : '连接中') + '</span>' : '<span class="dc-badge muted">' + (en ? 'Offline' : '离线') + '</span>');
@@ -1828,14 +1975,14 @@ const I18N = {
     btnUpdateLocal: '更新正式版',
     btnUpdateLocalNext: '更新预发布版',
     modeRepairTitle: '本地修复',
-    modeRepairDesc: '应急抢修：强力清除本地数据后快速启动',
-    modeRepairF1: '强力清除 ~/.dsh 全部本地数据',
+    modeRepairDesc: '应急抢修：只清理坏插件引用后快速启动，用户数据全部保留',
+    modeRepairF1: '只清理 profile 与坏插件引用（聊天记录 / 工作区 / 设置 / 凭据全部保留）',
     modeRepairF2: '修复坏插件引用导致的启动崩溃',
     modeRepairF3: '官方快速版 npx 直接启动',
     modeRepairBtn: '选择本地修复',
     logTitle: '命令行日志',
     logWaiting: '等待输出...',
-    errorTipText: '启动失败。可尝试「本地修复」强力清除本地数据后重新启动。',
+    errorTipText: '启动失败。可尝试「本地修复」清理坏插件引用后重新启动（聊天记录 / 工作区 / 设置都会保留）。',
     btnOpenNode: '前往 nodejs.org 下载',
     btnRepair: '选择本地修复',
     btnRetry: '重新开始',
@@ -1995,14 +2142,14 @@ const I18N = {
     btnUpdateLocal: 'Update Stable',
     btnUpdateLocalNext: 'Update Pre-release',
     modeRepairTitle: 'Local Repair',
-    modeRepairDesc: 'Emergency repair: force-clear local data then quick start',
-    modeRepairF1: 'Force-clear all ~/.dsh local data',
+    modeRepairDesc: 'Emergency repair: clears broken plugin refs only, then quick start — your data is kept',
+    modeRepairF1: 'Clears the profile and broken plugin refs only (history / workspaces / settings / credentials kept)',
     modeRepairF2: 'Fix startup crashes caused by broken plugin refs',
     modeRepairF3: 'Starts via official quick-start npx',
     modeRepairBtn: 'Choose Local Repair',
     logTitle: 'Command Log',
     logWaiting: 'Waiting for output...',
-    errorTipText: 'Startup failed. Try "Local Repair" to force-clear local data and restart.',
+    errorTipText: 'Startup failed. Try "Local Repair" to clear broken plugin refs and restart (history / workspaces / settings are kept).',
     btnOpenNode: 'Go to nodejs.org to download',
     btnRepair: 'Local Repair',
     btnRetry: 'Restart',
@@ -2396,6 +2543,8 @@ setRemoteToggle.addEventListener('change', () => {
 // 渲染移动端远程控制面板的手机访问地址：
 // enabled - 开关是否开启；lan - 主进程返回的局域网 IPv4 列表；servicePort - dsh 服务端口；
 // showRestartTip - 是否附加「重启生效」提示（仅切换开关时显示）
+// 说明：展示裸地址（不带 token）——dsh-mobile-remote 插件已在服务端接管 /，
+// 任何设备首次访问裸地址都会自动完成连接授权，之后长期直接使用。
 function renderRemoteLanList(enabled, lan, servicePort, showRestartTip) {
   if (!setRemoteHint || !setRemoteLanList) return;
   setRemoteHint.hidden = !enabled;
@@ -2404,13 +2553,19 @@ function renderRemoteLanList(enabled, lan, servicePort, showRestartTip) {
     return;
   }
   const p = servicePort || 3080;
+  const urls = (Array.isArray(lan) && lan.length) ? lan.map((ip) => 'http://' + ip + ':' + p) : [];
   let html = '';
-  if (lan && lan.length) {
+  if (urls.length) {
     html += '<div style="margin-bottom:6px;color:var(--text);font-size:13px;font-weight:600;">' +
       (currentLanguage === 'en' ? 'Phone access address (same Wi-Fi):' : '手机访问地址（与电脑同一 Wi-Fi）：') +
       '</div>';
-    html += lan.map((ip) =>
-      '<div class="remote-lan-item">http://' + ip + ':' + p + '</div>'
+    html += '<div style="margin-bottom:6px;color:var(--muted);font-size:12px;">' +
+      (currentLanguage === 'en'
+        ? 'Open directly — connection is authorized automatically on first visit.'
+        : '直接打开即可，首次访问会自动完成连接授权。') +
+      '</div>';
+    html += urls.map((u) =>
+      '<div class="remote-lan-item" style="word-break:break-all">' + escHtml(u) + '</div>'
     ).join('');
   } else {
     html += '<div style="color:var(--muted);font-size:12px;">' +
@@ -2474,13 +2629,24 @@ function loadDshVersionInfo() {
     // 动态展示更新入口：正式版 / 预发布版各自独立判断，版本号实时来自 npm。
     // 只要求本地运行环境已安装（localExists）——服务是否运行 / 当前版本是否已知均不影响，保证任何状态都有更新入口。
     const localExists = !!info.localExists;
-    const canStable = localExists && !!info.latest && (running === null || info.latest !== running);
-    const canNext = localExists && !!info.next && (running === null || info.next !== running);
+    // 严格"更新"：候选版本必须新于当前运行版本
+    const canStable = localExists && isNewerFlag(info, 'latest');
+    const canNext = localExists && isNewerFlag(info, 'next');
+    // 当前版本高于正式版渠道（例如运行预发布版 0.1.7-rc.2 而正式版是 0.1.5-rc.3）：
+    // 不当作"更新"，但保留用户主动「切换/回退到正式版」的入口，文案明确是切换。
+    const switchBackToStable = localExists && !canStable && !!info.aheadOfStable && !!info.latest;
+    lastDshVerInfo = info;
     if (btnSetUpdateStable) {
-      btnSetUpdateStable.hidden = !canStable;
-      btnSetUpdateStable.textContent = canStable
-        ? (currentLanguage === 'en' ? 'Update Stable v' : '更新正式版 v') + info.latest
-        : '';
+      if (canStable) {
+        btnSetUpdateStable.hidden = false;
+        btnSetUpdateStable.textContent = (currentLanguage === 'en' ? 'Update Stable v' : '更新正式版 v') + info.latest;
+      } else if (switchBackToStable) {
+        btnSetUpdateStable.hidden = false;
+        btnSetUpdateStable.textContent = (currentLanguage === 'en' ? 'Switch to Stable v' : '切换到正式版 v') + info.latest;
+      } else {
+        btnSetUpdateStable.hidden = true;
+        btnSetUpdateStable.textContent = '';
+      }
     }
     if (btnSetUpdateNext) {
       btnSetUpdateNext.hidden = !canNext;
@@ -2497,6 +2663,10 @@ function loadDshVersionInfo() {
       showDshNote(currentLanguage === 'en'
         ? 'Local runtime not installed. Choose "Instant Start" to install it first, then updates will be available here.'
         : '本地运行环境尚未安装。请先选择「极速启动」完成安装，之后即可在此一键更新。', '');
+    } else if (switchBackToStable) {
+      showDshNote(currentLanguage === 'en'
+        ? 'Current v' + running + ' is ahead of the stable channel (v' + info.latest + ') — no update needed. Use the button only if you want to switch back to the stable release.'
+        : '当前 v' + running + ' 已高于正式版渠道 v' + info.latest + '（预发布通道领先），无需更新；如需回到正式版，可点下方按钮切换。', 'ok');
     } else if (running && (info.latest || info.next)) {
       showDshNote(currentLanguage === 'en' ? 'Already up to date' : '已是最新版本', 'ok');
     } else {
@@ -2512,7 +2682,12 @@ function loadDshVersionInfo() {
 
 setDshCheckBtn.addEventListener('click', loadDshVersionInfo);
 // 设置页检测到新版后的更新入口：复用首页的一键更新流程（停止 → 重装 → 自动重启）
-if (btnSetUpdateStable) btnSetUpdateStable.addEventListener('click', () => requestUpdateLocal('latest', btnSetUpdateStable));
+if (btnSetUpdateStable) {
+  btnSetUpdateStable.addEventListener('click', () => requestUpdateLocal('latest', btnSetUpdateStable, {
+    // 正式版不比当前新 → 这次点击是"切换回正式版"（回退），确认文案要如实说明
+    switchBack: !isNewerFlag(lastDshVerInfo, 'latest'),
+  }));
+}
 if (btnSetUpdateNext) btnSetUpdateNext.addEventListener('click', () => requestUpdateLocal('next', btnSetUpdateNext));
 
 // 清除本地运行环境（极速启动固定目录）：确认 → 停止服务 → 删除目录
@@ -2933,8 +3108,8 @@ if (!window.dsh) {
       } else {
         btnRepair.hidden = false;
         errorTipText.textContent = message
-          ? `启动失败：${message}\n建议点击「选择本地修复」，强力清除本地数据后重新启动。`
-          : '启动失败。可点击「选择本地修复」强力清除本地数据后重新启动。';
+          ? `启动失败：${message}\n建议点击「选择本地修复」，清理坏插件引用后重新启动（聊天记录 / 工作区 / 设置都会保留）。`
+          : '启动失败。可点击「选择本地修复」清理坏插件引用后重新启动（聊天记录 / 工作区 / 设置都会保留）。';
       }
       if (!logOpen) toggleLog();
     }
@@ -3012,6 +3187,13 @@ if (!window.dsh) {
       }
       showCustomNote((ev.message || '完成') + '，点击下方「立即重启服务」即可生效。', 'ok');
       restartHintCard.hidden = false; // 安装/卸载完成 → 提示"立即重启"
+      refreshPluginLists();
+    } else if (ev.stage === 'warn') {
+      // 插件与当前 dsh 运行时声明不兼容（官方会拒绝加载）：提示但不当作失败，
+      // 用户可在「已安装插件」里授予精确版本例外
+      if (ev.pkg) localBusy.delete(ev.pkg);
+      appendCustomLog(ev.message || '');
+      showCustomNote(ev.message || '插件与当前 dsh 运行时声明不兼容', 'err');
       refreshPluginLists();
     } else if (ev.stage === 'error') {
       if (ev.pkg) localBusy.delete(ev.pkg);

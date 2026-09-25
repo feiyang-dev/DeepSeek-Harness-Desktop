@@ -10,6 +10,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const pluginMgr = require('./plugin-manager.js');
+// 插件 × dsh 运行时版本兼容性（对齐官方 0.1.7：peer 校验 + compatibility.json 例外）
+const pluginCompat = require('./plugin-compat.js');
 const pluginMarket = require('./plugin-market.js');
 const dshSettings = require('./dsh-settings.js');
 const pluginBridge = require('./plugin-bridge.js');
@@ -17,6 +19,16 @@ const pluginBridge = require('./plugin-bridge.js');
 // ============================================================
 //  全局状态
 // ============================================================
+// 未打包运行（electron . / npm start）时静默 Electron 的这类安全警告：
+//   "Insecure Content-Security-Policy ... This warning will not show up once the app is packaged"
+// 该警告针对「页面没有 CSP」，而页面的 CSP 由页面所有者（官方 dsh web server）决定，
+// 桌面端硬加策略容易打坏官方客户端与 dsh-resource:// 资源读取；正式安装包本来也不会
+// 显示它。这里只是让开发期日志面板干净，不影响任何实际安全设置（窗口仍是
+// contextIsolation + 无 nodeIntegration，外链一律丢给系统浏览器）。
+// 注意：必须放在创建任何 BrowserWindow 之前，渲染进程才会继承到该环境变量。
+if (!app.isPackaged) {
+  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
+}
 const isWin = process.platform === 'win32';
 // Windows 下把控制台代码页切到 UTF-8：main.js 日志输出 UTF-8 中文，若终端是
 // GBK（chcp 936）会显示乱码（如「鍚姩」）。从 start.bat / cmd 启动时共享控制台，
@@ -191,6 +203,96 @@ let host = '127.0.0.1';
 // 仅影响服务监听地址；桌面端自身的健康检查、主窗口加载、日志展示始终用 127.0.0.1，不受影响。
 let remoteControl = false;
 
+// ------------------------------------------------------------
+//  新版 dsh（>=0.1.2-rc.1）Web UI 浏览器会话认证
+//  dsh web 每次启动会生成一个一次性令牌（launch token），并打印到命令行：
+//    dsh web: http://127.0.0.1:3080/?token=xxxx (LAN: http://.../?token=xxxx)
+//  浏览器 / Electron 窗口必须先访问一次「带 token 的 URL」，服务端才会签发
+//  30 天有效的签名 cookie（Set-Cookie + 303 跳回 /）；之后访问裸地址才放行，
+//  否则首页直接返回 401「dsh web authentication required」。
+//  因此桌面端必须从服务进程输出中捕获该 token URL，并用它加载主窗口。
+// ------------------------------------------------------------
+let webAuthUrl = null;      // 本次服务进程打印的认证 URL（含 token），未捕获到为 null
+let webAuthBuffer = '';     // 跨 chunk 累积 stdout 文本，用于稳健匹配 URL 行
+let webAuthExchangeDone = false; // 是否已用该 token 换过一次浏览器会话 cookie（节流）
+const WEB_AUTH_URL_RE = /(?:^|\s)(https?:\/\/[^\s]*\/\?token=[A-Za-z0-9_-]+)/;
+
+// 从服务输出片段中捕获「dsh web: http://127.0.0.1:3080/?token=...」认证 URL。
+// 注意：dsh 打印的 LAN URL 也在同一行（LAN: http://192.168.x.x/?token=...），
+// 第一个 http URL 一定是本机 127.0.0.1，直接取首个匹配即可。
+function captureWebAuthUrl(text) {
+  if (webAuthUrl) return webAuthUrl;
+  if (!text) return null;
+  webAuthBuffer = (webAuthBuffer + String(text)).slice(-16384);
+  const m = WEB_AUTH_URL_RE.exec(webAuthBuffer);
+  if (m && m[1]) {
+    webAuthUrl = m[1];
+    logLine(`[认证] 已捕获 dsh web 访问令牌，将用带 token 的 URL 打开主界面`);
+    exchangeBrowserSessionCookie(webAuthUrl); // 顺手为主进程插件桥换一次 cookie
+  }
+  return webAuthUrl || null;
+}
+
+// 用 token URL 向 dsh web 换一次浏览器会话 cookie，供主进程插件桥（/api 前缀）使用。
+// Node http.get 默认不跟随 303，能直接读到 Set-Cookie 响应头。
+function exchangeBrowserSessionCookie(tokenUrl) {
+  if (!tokenUrl || webAuthExchangeDone) return;
+  webAuthExchangeDone = true;
+  try {
+    const u = new URL(tokenUrl);
+    const req = http.get({
+      host: u.hostname,
+      port: Number(u.port) || port,
+      path: u.pathname + (u.search || ''),
+      headers: { Accept: 'text/html' },
+      timeout: 5000,
+    }, (res) => {
+      const sc = res.headers['set-cookie'];
+      res.resume();
+      const cookie = (Array.isArray(sc) ? sc[0] : sc) || '';
+      const kv = String(cookie).split(';')[0].trim();
+      if (kv) {
+        pluginBridge.setAuthCookie(kv);
+        logLine('[认证] 已就绪浏览器会话 cookie（插件数据桥可用）');
+      }
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => { /* 服务刚就绪偶发未监听，静默；下次捕获不会重试也无妨 */ });
+  } catch (e) { /* ignore */ }
+}
+
+// 探测 dsh web 首页对「裸地址（无 cookie / 无 token）」的响应码。
+// 200 => 无需认证（老版 dsh，或 Electron 会话已有有效 cookie）；401/403 => 需要 token。
+function probeWebRootStatus(checkPort, timeoutMs) {
+  return new Promise((resolve) => {
+    const req = http.get({ host, port: checkPort, path: '/', timeout: timeoutMs || 2000 }, (res) => {
+      res.resume();
+      resolve(res.statusCode || 0);
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(0));
+  });
+}
+
+// 解析主窗口应加载的最终 URL：优先用捕获到的认证 URL；服务无需认证时立即用裸地址。
+// 服务需要认证但 URL 尚未捕获（就绪探活可能早于 URL 打印）时，最多等待 token 出现。
+async function resolveMainUiUrl(checkPort, waitMs) {
+  if (webAuthUrl) return webAuthUrl;
+  const code = await probeWebRootStatus(checkPort);
+  // 根路径直接 200（老版 dsh / 会话已有 cookie）：无需 token，用裸地址即可
+  if (code && code >= 200 && code < 300) return `http://${host}:${checkPort}`;
+  const deadline = Date.now() + (waitMs || 20000);
+  while (Date.now() < deadline) {
+    if (webAuthUrl) return webAuthUrl;
+    if (quitting || bootPhase === 'stopped' || bootPhase === 'error') break;
+    await new Promise((r) => setTimeout(r, 150));
+  }
+  if (!webAuthUrl) {
+    logLine('[认证] 未捕获到 dsh web 访问令牌（服务可能需要认证）。若主界面仍提示认证失败，请查看上方日志中 dsh web 打印的完整 URL，或重新运行服务。');
+  }
+  return webAuthUrl || `http://${host}:${checkPort}`;
+}
+
 // 获取本机局域网 IPv4 地址列表（供「移动端远程控制」设置页展示手机访问链接）
 function getLanIPv4Addresses() {
   const out = [];
@@ -244,14 +346,47 @@ function syncRemoteOverlay() {
       '    port: !!js ctx.webStartup.port ?? ' + String(port),
     ].join('\n') + '\n';
     fs.writeFileSync(file, content, 'utf8');
+    // 写完立即自检：0.1.7 起非法 patch 会影响服务启动，宁可提前发现
+    const v = validateRemoteOverlay(file);
+    if (!v.ok) logLine(`[警告] 生成的远程控制 overlay 未通过校验：${v.reason}`);
   } catch (e) {
     logLine(`[警告] 写入移动端远程控制 overlay 失败：${e.message}`);
   }
 }
 
-// 拼接启动参数中远程控制相关的片段：开启时传 --patch overlay，关闭时不传
+// 校验 overlay patch 的结构（官方 0.1.7 语义收紧，overlay 是我们的"插入点"）：
+//   - 空文件 / 仅含注释的 patch 会让 profile 启动失败 → 必须拒绝；
+//   - patch 指向的条目不存在时官方只打 stderr 警告（远程控制会静默失效）→ 提前检出；
+//   - --patch 是 launcher 自身参数，必须紧跟 web（调用方已保证顺序）。
+function validateRemoteOverlay(file) {
+  try {
+    const text = fs.readFileSync(file, 'utf8');
+    if (!dshSettings.patchHasEntries(text)) {
+      return { ok: false, reason: '文件为空或仅含注释（官方会以此拒绝启动）' };
+    }
+    if (!/^\s*-\s*id\s*:\s*['"]?webserver['"]?\s*$/m.test(text)) {
+      return { ok: false, reason: '缺少 `- id: webserver` 覆盖条目' };
+    }
+    if (!/\bhost\s*:/.test(text)) {
+      return { ok: false, reason: '缺少 host 覆盖（无法切到 0.0.0.0）' };
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
+// 拼接启动参数中远程控制相关的片段：开启时传 --patch overlay，关闭时不传。
+// 校验不通过时宁可不注入：服务照常启动，只失去局域网暴露能力，并在日志说明原因。
 function remoteControlArgs() {
-  return remoteControl ? ['--patch', remoteOverlayPath()] : [];
+  if (!remoteControl) return [];
+  const file = remoteOverlayPath();
+  const v = validateRemoteOverlay(file);
+  if (!v.ok) {
+    logLine(`[警告] 移动端远程控制 overlay 校验未通过：${v.reason}；本次启动不注入该 overlay（服务仍会正常启动，但手机将无法访问）`);
+    return [];
+  }
+  return ['--patch', file];
 }
 
 let bootWindow = null;   // 首页引导窗口（常驻：模式选择 / 运行状态控制台 / 插件管理 / 设置）
@@ -536,6 +671,65 @@ function readRecentLogs(maxLines) {
   }
 }
 
+// ============================================================
+//  官方 dsh 启动诊断识别（dsh 0.1.7 起官方会「分类显示错误」并把完整诊断落盘）
+//  这里只做识别 + 给出桌面端可操作的指引，不改变任何启动流程。
+// ============================================================
+const startupDiagnostics = [];   // [{ key, message, hint }]，每次启动前清空
+let pluginCompatWarned = false;
+
+const STARTUP_DIAG_RULES = [
+  {
+    key: 'plugin-incompat',
+    re: /incompatible with dsh|incompatible-version|is incompatible with the running/i,
+    hint: '检测到插件与当前 dsh 运行时版本不兼容：官方会跳过该组合包或把该插件行置为禁用（不会加载）。'
+      + '请到「插件管理 → 已安装插件」升级插件，或对该精确版本点击「允许此版本」授予例外，然后重启服务。',
+  },
+  {
+    key: 'bundle-skipped',
+    re: /skippedBundles|skipped bundle/i,
+    hint: '官方跳过了无法加载的组合包（多为与当前 dsh 版本不兼容或包损坏）。'
+      + '请到「插件管理」检查对应插件：升级到兼容版本，或卸载后重装。',
+  },
+  {
+    key: 'required-entry',
+    re: /required (entry|plugin)[^\n]*(fail|error|missing|not found|exit)/i,
+    hint: '某个必需插件条目加载失败，官方会直接退出（必需项失败不会降级运行）。'
+      + '请查看上方日志定位该插件，升级或卸载它后重试。',
+  },
+  {
+    key: 'settings-import',
+    re: /settings:\s*section .* was not imported/i,
+    hint: '旧版 settings.yaml 的部分设置未能迁移到新存储（dsh 0.1.7 起设置改存 profile 的 cordis.patch.yml，'
+      + '旧文件只导入一次并改名为 settings.yaml.imported）。未迁移的内容仍保留在该文件里，可在 Web UI 设置页重新设置。',
+  },
+  {
+    key: 'patch-entry-missing',
+    re: /patch .*not (found|exist)|no entry (with )?id|unmatched patch/i,
+    hint: 'patch 指向的条目在当前组合中不存在，官方只会打警告（该覆盖项会静默失效）。'
+      + '若刚开启过「移动端远程控制」，请确认 dsh 运行时版本仍支持 webserver 行配置。',
+  },
+];
+
+function diagnoseOfficialLine(text) {
+  const t = String(text || '');
+  const trimmed = t.trim();
+  // 跳过空行与桌面端自身的日志（桌面端日志统一以 [ 开头，避免自我触发）
+  if (!trimmed || trimmed.startsWith('[')) return;
+  for (const rule of STARTUP_DIAG_RULES) {
+    if (!rule.re.test(t)) continue;
+    if (startupDiagnostics.some((d) => d.key === rule.key)) return;
+    startupDiagnostics.push({ key: rule.key, message: trimmed, hint: rule.hint });
+    logLine(`[诊断] ${rule.hint}`);
+    if (rule.key === 'plugin-incompat' && !pluginCompatWarned) {
+      pluginCompatWarned = true;
+      // 让插件管理页同步提示（复用现有的 warn 展示通道）
+      broadcast('plugin:event', { stage: 'warn', message: rule.hint });
+    }
+    return;
+  }
+}
+
 function logLine(line) {
   const text = typeof line === 'string' ? line : String(line);
   // 每行日志统一带 [HH:MM:SS] 时间戳：界面日志面板与开发终端可见，便于判断"干了多久"。
@@ -547,6 +741,8 @@ function logLine(line) {
   broadcast('boot:log', stamped);
   appendLogFile(text);
   process.stderr.write('[dsh] ' + stamped + '\n');
+  // 服务输出里出现官方 0.1.7 的已知失败/降级信号时，补一条可操作的中文指引
+  diagnoseOfficialLine(text);
 }
 
 // 启动失败：透传可选的崩溃码，前端据此展示针对性修复建议
@@ -571,22 +767,33 @@ function isPortOpen(checkPort) {
   });
 }
 
-function isWebReady(checkPort) {
-  return new Promise((resolve) => {
-    const req = http.get({ host, port: checkPort, path: '/', timeout: 2000 }, (res) => {
-      res.resume();
-      resolve(true);
-    });
-    req.on('timeout', () => req.destroy());
-    req.on('error', () => resolve(false));
-  });
+// 「端口开了」≠「界面能用」：实测 dsh 0.1.5 先开放 3080 端口，
+// 之后还要再花 3~9 秒装配前端与插件、初始化认证，才打印带 token 的 URL
+// （那才是真正可用的时刻，窗口也只有此时才能加载成功）。
+// 若按"端口有响应"就宣告就绪，用户会对着"已就绪"再空等数秒。
+// 因此以「已捕获 token URL」或「根路径直接 2xx（老版 dsh / 已有会话 cookie）」为准；
+// 同时保留兜底宽限：端口开放后最多再等 UI_READY_GRACE_MS，超时则退回"端口就绪"，
+// 避免将来 dsh 改了输出格式导致永远等不到 token 而卡死（宁可早一点、也不卡住）。
+const UI_READY_GRACE_MS = 25000;
+let webListeningSince = 0; // 端口有响应但界面尚未就绪的起始时刻（0 = 不在该窗口内）
+async function isUiReady(checkPort) {
+  if (webAuthUrl) { webListeningSince = 0; return true; }
+  const code = await probeWebRootStatus(checkPort);
+  if (code && code >= 200 && code < 300) { webListeningSince = 0; return true; }
+  if (code) {
+    if (!webListeningSince) webListeningSince = Date.now();
+    if (Date.now() - webListeningSince > UI_READY_GRACE_MS) return true;
+    return false;
+  }
+  webListeningSince = 0;
+  return false;
 }
 
 async function waitForWebReady(checkPort, timeoutMs, onTick, shouldAbort) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (shouldAbort && shouldAbort()) return false;
-    if (await isWebReady(checkPort)) return true;
+    if (await isUiReady(checkPort)) return true;
     onTick && onTick();
     await new Promise((r) => setTimeout(r, 300));
   }
@@ -1233,6 +1440,11 @@ async function nukeLocalDshData() {
   // 2) 只删除 profiles（坏插件引用的唯一来源）；sessions/storages/settings 全部保留
   let removed = 0;
   const profilesDir = path.join(dshHome, 'profiles');
+  // dsh 0.1.7 起用户设置与 Agent 预设就存在 profiles 里，删除前先暂存，
+  // 服务下次启动成功后自动合并回新 profile（见 restoreUserPrefsAfterBoot）。
+  saveUserPrefsBeforeProfilesNuke(profilesDir);
+  // 双保险：万一 vault 又在 profiles 里写了备份，删除前先搬回 ~/.dsh-backups
+  migrateStrayVaultBackups();
   if (fs.existsSync(profilesDir)) {
     try {
       fs.rmSync(profilesDir, { recursive: true, force: true });
@@ -1260,6 +1472,212 @@ async function nukeLocalDshData() {
   //    旧格式元数据会导致服务启动即崩溃，且清理 profiles 无法解决。
   await repairCredentialsFile();
   return removed;
+}
+
+// ------------------------------------------------------------
+//  修复模式：保护 0.1.7 起放进 profile 的用户偏好
+// ------------------------------------------------------------
+// dsh 0.1.7 起，这些内容都写在 profile 的 cordis.patch.yml 里：
+//   - 用户设置（如 `- id: ui-theme` 的主题/字号）
+//   - Agent 预设（`- id: preset-*` / `- id: agent-preset*`）
+//   - 精确版本例外（profile 的 compatibility.json）
+// 而"本地修复"会删除整个 profiles/ 目录 → 上述内容全丢。
+// 因此在删除前把它们提取出来，服务下次成功启动后（官方已重建 profile）
+// 再合并回新的 patch 文件；插件接线类条目（坏插件的根源）依然被清掉。
+const USER_PREF_ENTRY_RE = /^(ui-theme|preset-.*|agent-preset.*)$/;
+
+function repairRestorePath() {
+  try {
+    return path.join(app.getPath('userData'), 'dsh-repair-restore.json');
+  } catch (e) {
+    return path.join(os.tmpdir(), 'dsh-repair-restore.json');
+  }
+}
+
+// 删除 profiles 前：把用户偏好条目与兼容性例外存到 userData
+function saveUserPrefsBeforeProfilesNuke(profilesDir) {
+  try {
+    if (!fs.existsSync(profilesDir)) return null;
+    const profiles = {};
+    for (const name of fs.readdirSync(profilesDir)) {
+      const dir = path.join(profilesDir, name);
+      let stat = null;
+      try { stat = fs.statSync(dir); } catch (e) { continue; }
+      if (!stat.isDirectory()) continue;
+      const patchFile = path.join(dir, 'cordis.patch.yml');
+      const text = (() => { try { return fs.readFileSync(patchFile, 'utf8'); } catch (e) { return null; } })();
+      const entries = [];
+      if (text) {
+        const { lines, entries: parsed } = dshSettings.splitTopLevelEntries(text);
+        for (const e of parsed) {
+          const id = dshSettings.entryIdOf(e.text);
+          if (id && USER_PREF_ENTRY_RE.test(id)) {
+            entries.push(lines.slice(e.start, e.end).join('\n').replace(/\s+$/, ''));
+          }
+        }
+      }
+      const compatFile = path.join(dir, 'compatibility.json');
+      let compatibility = null;
+      try { compatibility = JSON.parse(fs.readFileSync(compatFile, 'utf8')); } catch (e) { compatibility = null; }
+      if (entries.length || compatibility) profiles[name] = { entries, compatibility };
+    }
+    if (Object.keys(profiles).length === 0) return null;
+    const payload = { savedAt: new Date().toISOString(), profiles };
+    fs.writeFileSync(repairRestorePath(), JSON.stringify(payload, null, 2) + '\n', 'utf8');
+    const total = Object.values(profiles).reduce((n, p) => n + p.entries.length, 0);
+    logLine(`[清理] 已暂存 ${total} 条用户偏好（主题 / Agent 预设）与版本例外，服务下次启动成功后自动恢复`);
+    return payload;
+  } catch (e) {
+    logLine(`[警告] 暂存用户偏好失败（不影响修复，但预设需从备份手工恢复）：${e.message}`);
+    return null;
+  }
+}
+
+// 服务启动成功后：把暂存的用户偏好合并回新 profile 的 patch（已存在同 id 条目则跳过）
+async function restoreUserPrefsAfterBoot() {
+  const file = repairRestorePath();
+  if (!fs.existsSync(file)) return;
+  let payload = null;
+  try { payload = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { payload = null; }
+  if (!payload || !payload.profiles) {
+    try { fs.unlinkSync(file); } catch (e) { /* ignore */ }
+    return;
+  }
+  let restored = 0;
+  for (const [name, saved] of Object.entries(payload.profiles)) {
+    const dir = pluginMgr.profileDir(name);
+    try {
+      // patch 可能尚未创建：官方会在本次启动中初始化 profile，稍后重试由下次启动兜底
+      const patchFile = dshSettings.profilePatchPath(name);
+      if (!fs.existsSync(dir)) continue;
+      let text = '';
+      try { text = fs.readFileSync(patchFile, 'utf8'); } catch (e) { text = ''; }
+      const existing = new Set(
+        dshSettings.splitTopLevelEntries(text).entries
+          .map((e) => dshSettings.entryIdOf(e.text))
+          .filter(Boolean)
+      );
+      const add = (saved.entries || []).filter((rawText) => {
+        const id = dshSettings.entryIdOf(rawText);
+        return id && !existing.has(id);
+      });
+      if (add.length > 0) {
+        const body = text.replace(/\s+$/, '');
+        const next = (body.length ? body + '\n' : '') + add.join('\n') + '\n';
+        if (!dshSettings.patchHasEntries(next)) throw new Error('合并结果不含顶层条目');
+        fs.writeFileSync(patchFile, next, 'utf8');
+        restored += add.length;
+        logLine(`[恢复] 已把 ${add.length} 条用户偏好（主题 / Agent 预设）合并回 profile「${name}」的 cordis.patch.yml`);
+      }
+      // 版本例外：仅在缺失时恢复，避免覆盖官方新写的记录
+      if (saved.compatibility && Object.keys(saved.compatibility).length > 0) {
+        const compatFile = pluginCompat.compatibilityPath(dir);
+        if (!fs.existsSync(compatFile)) {
+          fs.writeFileSync(compatFile, JSON.stringify(saved.compatibility, null, 2) + '\n', 'utf8');
+          logLine(`[恢复] 已恢复 profile「${name}」的版本例外（compatibility.json）`);
+        }
+      }
+    } catch (e) {
+      logLine(`[警告] 恢复 profile「${name}」的用户偏好失败：${e.message}`);
+    }
+  }
+  try { fs.unlinkSync(file); } catch (e) { /* ignore */ }
+  if (restored > 0) logLine('[恢复] 用户偏好已恢复；如需在 Web UI 中看到效果，重新打开界面即可');
+}
+
+// ------------------------------------------------------------
+//  已知插件问题的桌面端侧修正（dsh 0.1.7 适配）
+// ------------------------------------------------------------
+// 在服务启动前对已安装的 dsh-vault 应用修正：它用 settings.documentPath 的父目录
+// 推断 dsh home，0.1.7 起该路径变成 profile 的 cordis.patch.yml，导致
+//   - 备份源目录错位（profiles/web/sessions|storages|profiles 都不存在，robocopy 报 0x2）
+//   - 备份根错位（写到 ~/.dsh/profiles/.dsh-backups，历史备份读不到，且可能被修复模式删掉）
+// 修正在插件加载前完成，本次启动即生效；幂等，命中过就跳过。
+// （自动化总入口见下方的 runStartupSelfCheck：插件修正 + 备份归位 + 残留清理）
+
+// 把 vault 因上述问题写错位置的备份搬回真正的备份根 ~/.dsh-backups。
+// 自动化策略（启动时与「本地修复」删除 profiles 前各执行一次，无需用户干预）：
+//   1) 备份实体（非点开头的项）搬回 ~/.dsh-backups，目标已有同名项时跳过（绝不覆盖）；
+//   2) 搬完后若目录里只剩插件状态文件（点开头）且正确根已有同名文件，
+//      直接删掉整个错位目录，不留尾巴。
+// 返回 { moved, skipped, removedDir }。
+function migrateStrayVaultBackups() {
+  const result = { moved: 0, skipped: 0, removedDir: false };
+  const dshHome = dshSettings.dshHomeDir();
+  const realRoot = path.join(os.homedir(), '.dsh-backups');
+  const stray = path.join(dshHome, 'profiles', '.dsh-backups');
+  if (!fs.existsSync(stray)) return result;
+  let entries = [];
+  try { entries = fs.readdirSync(stray); } catch (e) { return result; }
+  try { fs.mkdirSync(realRoot, { recursive: true }); } catch (e) { return result; }
+
+  for (const name of entries) {
+    if (name.startsWith('.')) continue; // vault 自身状态文件不搬
+    const src = path.join(stray, name);
+    const dst = path.join(realRoot, name);
+    if (fs.existsSync(dst)) { result.skipped++; continue; }
+    try {
+      fs.renameSync(src, dst);
+      result.moved++;
+    } catch (e) {
+      // 跨盘或被占用时退化为复制 + 删除
+      try {
+        fs.cpSync(src, dst, { recursive: true });
+        fs.rmSync(src, { recursive: true, force: true });
+        result.moved++;
+      } catch (e2) {
+        result.skipped++;
+      }
+    }
+  }
+
+  // 收尾：只剩点开头的状态文件，且正确根里已有同名文件 → 删除错位目录
+  try {
+    const rest = fs.readdirSync(stray);
+    if (rest.length === 0) {
+      fs.rmdirSync(stray);
+      result.removedDir = true;
+    } else if (rest.every((n) => n.startsWith('.'))) {
+      const allMirrored = rest.every((n) => fs.existsSync(path.join(realRoot, n)));
+      if (allMirrored) {
+        fs.rmSync(stray, { recursive: true, force: true });
+        result.removedDir = true;
+      }
+    }
+  } catch (e) { /* 占用/权限问题：留着下次启动再试 */ }
+
+  if (result.moved || result.skipped || result.removedDir) {
+    logLine(`[备份] 已自动归位 vault 写错位置的备份：移动 ${result.moved} 项`
+      + (result.skipped ? `，跳过 ${result.skipped} 项（同名已存在）` : '')
+      + (result.removedDir ? '，并清理了空目录 ~/.dsh/profiles/.dsh-backups' : ''));
+  }
+  return result;
+}
+
+// 启动自检（自动化总入口）：把 dsh 版本升级带来的"插件侧已知问题"一次性处理掉，
+// 全部幂等、无需用户干预，且只在确实做了事情时输出一行汇总。
+//   1) 对已安装插件应用已知修正（必须在 dsh 加载插件之前执行才生效）；
+//   2) 把写错位置的备份归位并清掉残留目录。
+function runStartupSelfCheck() {
+  const actions = [];
+  try {
+    const patched = pluginMgr.patchInstalledVaultPlugins(pluginMgr.profileDir());
+    for (const p of patched) {
+      logLine(`[自检] 已修正插件 ${p.pkg} 的 dsh home 推导（dsh 0.1.7 起 settings 文档落在 profile 里，`
+        + '原写法会把备份源目录与备份根算到 profiles 下）');
+      actions.push(`插件修正 ${p.pkg}`);
+    }
+  } catch (e) {
+    logLine(`[自检] 应用插件修正失败（不影响启动）：${e.message}`);
+  }
+  try {
+    const m = migrateStrayVaultBackups();
+    if (m.moved) actions.push(`错位备份归位 ${m.moved} 项`);
+    if (m.removedDir) actions.push('清理错位备份目录');
+  } catch (e) {
+    logLine(`[自检] 归位错位备份失败（不影响启动）：${e.message}`);
+  }
+  if (actions.length) logLine(`[自检] 自动处理完成：${actions.join('、')}`);
 }
 
 // ============================================================
@@ -1698,12 +2116,17 @@ function sourceStartWeb(repoPath, nodeExe, pnpmCli) {
   child.stdout && child.stdout.on('data', (d) => {
     const s = String(d);
     logLine(s.replace(/\r?\n$/, ''));
+    captureWebAuthUrl(s); // 新版 dsh 会打印带 token 的认证 URL，捕获后用于打开主界面
     if (/listening|http:\/\/|Local:|ready/i.test(s)) {
       started = true;
       setProgress(96, 'start', '服务已启动，正在打开界面...');
     }
   });
-  child.stderr && child.stderr.on('data', (d) => logLine(String(d).replace(/\r?\n$/, '')));
+  child.stderr && child.stderr.on('data', (d) => {
+    const s = String(d);
+    logLine(s.replace(/\r?\n$/, ''));
+    captureWebAuthUrl(s);
+  });
   child.on('error', (err) => { logLine(`[错误] 服务启动失败: ${err.message}`); });
   child.on('exit', (code, signal) => {
     // 若该子进程已不是当前服务进程（用户主动停止/重启时 serverProc 已被置空），忽略其退出
@@ -1862,12 +2285,17 @@ function localStartWeb(nodeExe, entry) {
   child.stdout && child.stdout.on('data', (d) => {
     const s = String(d);
     logLine(s.replace(/\r?\n$/, ''));
+    captureWebAuthUrl(s); // 新版 dsh 会打印带 token 的认证 URL，捕获后用于打开主界面
     if (/listening|http:\/\/|Local:|ready/i.test(s)) {
       started = true;
       setProgress(96, 'start', '服务已启动，正在打开界面...');
     }
   });
-  child.stderr && child.stderr.on('data', (d) => logLine(String(d).replace(/\r?\n$/, '')));
+  child.stderr && child.stderr.on('data', (d) => {
+    const s = String(d);
+    logLine(s.replace(/\r?\n$/, ''));
+    captureWebAuthUrl(s);
+  });
   child.on('error', (err) => { logLine(`[错误] 服务启动失败: ${err.message}`); });
   child.on('exit', (code, signal) => {
     // 若该子进程已不是当前服务进程（用户主动停止/重启时 serverProc 已被置空），忽略其退出
@@ -2058,7 +2486,7 @@ async function crashRetryWaitReady() {
       }
       return;
     }
-    if (await isWebReady(port)) {
+    if (await isUiReady(port)) {
       if (serverProc !== retryProc || !serverProc) return;
       setProgress(100, 'ready', '启动完成');
       finishBoot();
@@ -2133,14 +2561,17 @@ function startWebViaPnpm(nodeExe, pnpmCli) {
       const s = String(d);
       startupOutput += s;
       logLine(s.replace(/\r?\n$/, ''));
+      captureWebAuthUrl(s); // 新版 dsh 会打印带 token 的认证 URL，捕获后用于打开主界面
       if (/listening|http:\/\/|Local:|ready/i.test(s)) {
         started = true;
         setProgress(96, 'start', '服务已启动，正在打开界面...');
       }
     });
     child.stderr && child.stderr.on('data', (d) => {
-      startupOutput += String(d);
-      logLine(String(d).replace(/\r?\n$/, ''));
+      const s = String(d);
+      startupOutput += s;
+      logLine(s.replace(/\r?\n$/, ''));
+      captureWebAuthUrl(s);
     });
     child.on('error', (err) => { logLine(`[错误] 服务启动失败: ${err.message}`); });
     child.on('exit', (code, signal) => {
@@ -2451,10 +2882,61 @@ async function killProcessOnPort(checkPort) {
   });
 }
 
+// 列出占用指定端口的进程（PID + 进程名），仅用于诊断与多实例提示。
+async function listPortOccupants(checkPort) {
+  const out = [];
+  if (!isWin) {
+    return await new Promise((resolve) => {
+      execFile('lsof', ['-ti', `tcp:${checkPort}`], { windowsHide: true }, (err, stdout) => {
+        if (err) return resolve([]);
+        const pids = String(stdout).split(/\r?\n/).map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0);
+        for (const pid of pids) out.push({ pid, name: null });
+        resolve(out);
+      });
+    });
+  }
+  const pids = await new Promise((resolve) => {
+    execFile('netstat', ['-ano', '-p', 'TCP'], { windowsHide: true }, (err, stdout) => {
+      if (err) return resolve([]);
+      const set = new Set();
+      for (const line of String(stdout).split(/\r?\n/)) {
+        const m = line.match(/TCP\s+(?:\[[0-9a-f:.]+\]|\S+):(\d+)\s+\S+\s+LISTENING\s+(\d+)\s*$/i);
+        if (m && Number(m[1]) === checkPort) set.add(Number(m[2]));
+      }
+      resolve([...set]);
+    });
+  });
+  for (const pid of pids) {
+    const name = await new Promise((resolve) => {
+      execFile('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { windowsHide: true }, (err, stdout) => {
+        if (err) return resolve(null);
+        const m = /^"([^"]+)"/.exec(String(stdout).trim());
+        resolve(m ? m[1] : null);
+      });
+    });
+    out.push({ pid, name });
+  }
+  return out;
+}
+
 // 启动时立刻终结占用端口的旧服务（App 启动瞬间执行，不依赖模式选择）
 async function cleanupOldService() {
   logLine('[启动] 正在检测端口 ' + port + ' 上的旧服务...');
   if (await isPortOpen(port)) {
+    // 多实例提示：dsh 0.1.7 起官方支持多实例共存，会话被其他实例占用时会给出
+    // 明确报错（提示退出对应实例后重试）。桌面端仍需要独占该端口，因此这里
+    // 把「要结束的是别人的实例」显式说明，而不是静默 kill。
+    try {
+      const occupants = await listPortOccupants(port);
+      const ownPid = serverProc ? serverProc.pid : null;
+      const foreign = occupants.filter((o) => o.pid !== ownPid);
+      if (foreign.length > 0) {
+        logLine('[实例] 端口 ' + port + ' 被本 App 之外的进程占用：'
+          + foreign.map((o) => `${o.name || 'unknown'}(PID ${o.pid})`).join('、'));
+        logLine('[实例] dsh 0.1.7 起支持多个 DSH 实例共存，但桌面端需要独占该端口才能启动自己的服务，稍后将结束上述进程；'
+          + '若它是你手动启动的 dsh（例如终端里的 dsh web），请让桌面端改用其他端口：npm start -- --port <端口>');
+      }
+    } catch (e) { /* 诊断失败不影响清理 */ }
     // 先停掉由本 App 启动的服务进程
     if (serverProc) await stopWebService();
     // 再强制终止端口上残留的进程（可能是用户手动 npx 启动的旧服务）
@@ -2481,6 +2963,14 @@ async function run() {
     return;
   }
 
+  // 新一次启动：清空上一次的官方诊断记录（避免把旧故障带到本次错误提示里）
+  startupDiagnostics.length = 0;
+  pluginCompatWarned = false;
+
+  // 启动自检（自动化总入口）：插件侧已知修正 + 错位备份归位 + 残留清理。
+  // 必须在任何 dsh 进程 spawn 之前执行，插件修正才会在本次启动生效；全部幂等。
+  runStartupSelfCheck();
+
   // 解析 --port（仅命令行参数，界面选择不涉及）
   const cliArgs = process.argv.slice(1);
   const portIdx = cliArgs.findIndex((a) => a === '--port');
@@ -2496,6 +2986,12 @@ async function run() {
   // 用户主动重新运行：视为新一轮尝试，自动修复预算复位（与 finishBoot 复位策略一致）
   crashRepairBudget = 1;
   cacheRepairBudget = 2;
+  // 新一轮启动会创建全新的 dsh 服务进程 → 每次进程启动都生成新的认证令牌。
+  // 必须清空上一轮捕获的 URL，等新进程打印后再捕获（否则会用旧 token 打开被 401 拦）。
+  webAuthUrl = null;
+  webAuthBuffer = '';
+  webAuthExchangeDone = false;
+  webListeningSince = 0;
 
   // 0) 根据所选模式加载详细步骤表（快速启动 + 开发者选项模式用独立步骤表）
   currentSteps = (selectedMode === 'quick' && developerMode)
@@ -2647,13 +3143,15 @@ async function run() {
       percent: Math.round(Math.max(bootProgressPercent, pct)),
       stage: 'start',
       text: `正在启动服务，已等待 ${elapsed} 秒...`,
-      detail: '首次启动需要初始化运行环境，请耐心等待',
+      detail: '正在加载 dsh 运行环境与插件（dsh 打印访问令牌前界面无法打开），请耐心等待',
       step: resolveStep(pct),
     });
   }, () => bootPhase === 'error');
   if (bootPhase === 'error') return; // 子进程已退出并报错，交给错误界面处理
   if (!ready) {
-    bootError('Web UI 启动超时，请查看下方日志排查问题。');
+    // 官方 0.1.7 会分类报错并落盘完整诊断；若我们已识别到已知信号，直接把指引带上
+    const diag = startupDiagnostics.length > 0 ? `（已识别官方诊断：${startupDiagnostics[0].hint}）` : '';
+    bootError(`Web UI 启动超时，请查看下方日志排查问题${diag}`);
     return;
   }
   setProgress(100, 'ready', '启动完成');
@@ -2675,6 +3173,9 @@ function finishBoot() {
   serviceState.pid = serverProc ? serverProc.pid : null;
   serviceState.devMode = developerMode && (selectedMode === 'quick' || selectedMode === 'source');
   serviceState.devWebPid = devWebProc ? devWebProc.pid : null;
+  // 修复模式暂存的用户偏好（主题 / Agent 预设 / 版本例外）：服务已就绪、官方
+  // 已重建 profile，此时合并回去最安全。
+  restoreUserPrefsAfterBoot().catch(() => {});
   serviceState.remoteControl = remoteControl;
   serviceState.lanAddresses = remoteControl ? getLanIPv4Addresses() : [];
   logLine(`[服务] 已就绪：http://${host}:${port}（模式：${selectedMode || 'unknown'}${serviceState.devMode ? '，开发者选项模式' : ''}）`);
@@ -2775,8 +3276,26 @@ async function queryDshDistTags() {
   };
 }
 
+// 版本比较（含预发布）：复用插件兼容模块的 semver 实现。
+// 返回 1 表示 a 比 b 新，-1 更新，0 相等；无法解析返回 null。
+function compareDshVersions(a, b) {
+  if (!a || !b) return null;
+  return pluginCompat.compareVersions(String(a).replace(/^v/, ''), String(b).replace(/^v/, ''));
+}
+
+function isNewerDshVersion(candidate, current) {
+  if (!candidate) return false;
+  if (!current) return true; // 当前版本未知：按"可能有新版"处理
+  return compareDshVersions(candidate, current) === 1;
+}
+
 // 离线启动模式：后台静默检查官方新版本（正式版 latest + 预发布版 next）。
 // 有网时延迟调用，不抢启动带宽；离线时查询失败静默跳过，完全不影响启动。
+//
+// 注意（dsh 0.1.7 时代的重要修正）：官方正式版（latest）可能**低于**用户当前
+// 运行的预发布版（例如 current=0.1.7-rc.2 / latest=0.1.5-rc.3）。此前用字符串
+// 不等判断"有新版本"，会把这种情况误报成"检测到官方新版 v0.1.5-rc.3"，点一下
+// 就把运行环境降级。现在只在候选版本**严格新于**当前版本时才提示更新。
 async function checkLocalDshUpdate() {
   try {
     if (serviceState.mode !== 'local') return;
@@ -2786,13 +3305,21 @@ async function checkLocalDshUpdate() {
     if (!running) return;
     const latest = res.latest;
     const next = res.next && res.next !== latest ? res.next : null;
-    const hasStable = latest !== running;
-    const hasNext = !!next && next !== running;
+    const hasStable = isNewerDshVersion(latest, running);
+    const hasNext = !!next && isNewerDshVersion(next, running);
     if (!hasStable && !hasNext) {
-      logLine(`[版本] 本地运行环境已是最新版 v${running}`);
+      const newerThanBoth = compareDshVersions(running, latest) === 1
+        && (!next || compareDshVersions(running, next) === 1);
+      if (newerThanBoth) {
+        logLine(`[版本] 当前 v${running} 已高于官方正式版渠道 v${latest}`
+          + (next ? ` 与预发布渠道 v${next}` : '')
+          + '（无需更新；如需回到正式版，可在设置 →「运行环境（dsh）」手动切换）');
+      } else {
+        logLine(`[版本] 本地运行环境已是最新版 v${running}`);
+      }
       return;
     }
-    serviceState.localUpdate = { latest, next, current: running };
+    serviceState.localUpdate = { latest: hasStable ? latest : null, next: hasNext ? next : null, current: running };
     const hint = [];
     if (hasStable) hint.push(`正式版 v${latest}`);
     if (hasNext) hint.push(`预发布版 v${next}`);
@@ -2882,13 +3409,20 @@ async function updateLocalDsh(tag) {
     run();
     return { ok: true, restarted: true };
   }
-  // 服务未运行 / 非本地模式运行：只更新本地环境，不自动重启
   if (wasRunning) {
+    // 非本地模式（快速 / 源码）运行中：本地运行环境已更新，当前服务不受影响
     logLine('[更新] 本地运行环境更新完成（当前服务运行不受影响，下次「极速启动」自动使用新版）');
-  } else {
-    logLine('[更新] 本地运行环境更新完成，下次选择「极速启动」即可使用新版本');
+    return { ok: true, restarted: false };
   }
-  return { ok: true, restarted: false };
+  // 服务未运行：更新完成后直接以「极速启动」把服务启动起来。
+  // 只弹"请自行重新运行"的提示是不够的：若本次会话从未选过启动模式
+  // （selectedMode 为空——例如打开应用后直接到设置里点「一键更新」），
+  // 此时点「重新运行」会命中 restartService 的模式守卫而直接退回模式选择页，
+  // 表现为"提示更新成功，但桌面端没反应"。这里直接接管启动，让更新立即可用。
+  selectedMode = 'local';
+  logLine('[更新] 本地运行环境更新完成，正在以「极速启动」启动服务...');
+  run();
+  return { ok: true, restarted: true };
 }
 
 // 删除本地运行环境目录（pnpm 的 node_modules 含大量 junction 符号链接与数百 MB 小文件）。
@@ -2968,7 +3502,10 @@ function showMainWindow() {
     mainWindow.focus();
     return;
   }
-  createMainWindow();
+  createMainWindow().catch((err) => {
+    logLine(`[错误] 创建主界面窗口失败：${err && err.message}`);
+    mainWindow = null;
+  });
 }
 
 // 停止服务：终止子进程 → 关闭 WebUI 主窗口 → 首页显示"已停止"
@@ -2989,9 +3526,17 @@ async function stopService() {
 // 重新运行：停止（如有）→ 用上次所选模式重新走完整启动流程
 async function restartService() {
   if (!selectedMode) {
-    bootPhase = 'mode';
-    broadcast('boot:phase', { phase: 'mode' });
-    return { ok: false, message: '尚未选择启动模式' };
+    // 本次会话尚未选过启动模式（例如打开应用后直接更新运行环境 / 修复过）：
+    // 不能直接退回模式选择页——那样点「重新运行」看起来"没反应"（界面只是闪回模式选择）。
+    // 本地运行环境已就绪时按「极速启动」继续；确实没有本地环境时才回到模式选择。
+    if (localDshEntry()) {
+      selectedMode = 'local';
+      logLine('[服务] 尚未选择启动模式；本地运行环境已就绪，自动按「极速启动」继续');
+    } else {
+      bootPhase = 'mode';
+      broadcast('boot:phase', { phase: 'mode' });
+      return { ok: false, message: '尚未选择启动模式' };
+    }
   }
   logLine('[服务] 用户请求重新运行（模式：' + selectedMode + '）');
   // 立即进入"重新启动中"阶段并广播，避免界面回退到"运行中"：
@@ -3056,7 +3601,7 @@ function createBootWindow() {
   bootWindow.on('closed', () => { bootWindow = null; });
 }
 
-function createMainWindow() {
+async function createMainWindow() {
   // 窗口背景色跟随主题（浅色时避免加载期闪黑）
   const resolved = resolveEffectiveTheme();
   mainWindow = new BrowserWindow({
@@ -3072,21 +3617,81 @@ function createMainWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      // 内核兼容层：Electron 31(Chromium 126) 未按规范解析非特殊 scheme 的 host，
+      // 会让官方 Web UI 的 `dsh-resource://file/…` 资源地址读不到协议键，
+      // 文件预览报「文件资源服务不可用」。兼容层只在该差异存在时生效，
+      // 新版内核下不注入任何东西。详见 resource-url-compat.js。
+      preload: path.join(__dirname, 'resource-url-compat.js'),
     },
   });
+  const winRef = mainWindow;
   mainWindow.webContents.on('did-fail-load', (e, code, desc, url) => {
     logLine(`[诊断] 主界面加载失败 (${code}) ${desc} ${url}`);
   });
+  // ── WebUI 渲染进程诊断 ────────────────────────────────────────────────
+  // 主界面本质是一个 Chromium 渲染进程：官方 Web UI 的某个客户端插件在渲染进程里
+  // 报错（注入失败、插件包 404、远程调用失败）时，桌面端日志此前完全看不到——
+  // 而同一地址在普通浏览器里能正常工作，说明问题就在这个渲染进程里。
+  // 这里把「控制台 warning/error」「请求 4xx/5xx / 失败」「实际导航到的 URL」
+  // 一并落到桌面端日志，遇到"某个功能用不了"可直接定位到具体插件与请求。
+  mainWindow.webContents.on('console-message', (e, level, message, line, sourceId) => {
+    const lv = typeof level === 'number' ? (['debug', 'info', 'warn', 'error'][level] || String(level)) : String(level || '');
+    if (typeof level === 'number' ? level >= 2 : (lv === 'warn' || lv === 'error')) {
+      logLine(`[WebUI:${lv}] ${message}${sourceId ? ` (${sourceId}:${line})` : ''}`);
+    }
+  });
+  mainWindow.webContents.on('did-navigate', (e, url) => logLine(`[WebUI] 已导航到 ${url}`));
+  try {
+    const ses = mainWindow.webContents.session;
+    const wf = { urls: [`http://127.0.0.1:${port}/*`, `http://localhost:${port}/*`, `ws://127.0.0.1:${port}/*`] };
+    ses.webRequest.onCompleted(wf, (d) => {
+      if (d.statusCode >= 400) logLine(`[WebUI] HTTP ${d.statusCode} ${d.method} ${d.url}`);
+    });
+    ses.webRequest.onErrorOccurred(wf, (d) => {
+      logLine(`[WebUI] 请求失败 ${d.error} ${d.method} ${d.url}`);
+    });
+  } catch (e) { /* 诊断用，注册失败不影响主流程 */ }
+  // 开发期快捷键：F12 打开/关闭开发者工具（打包版默认不开，避免普通用户误触）
+  if (!app.isPackaged) {
+    mainWindow.webContents.on('before-input-event', (e, input) => {
+      if (input.type === 'keyDown' && input.key === 'F12') {
+        mainWindow.webContents.toggleDevTools();
+        e.preventDefault();
+      }
+    });
+  }
   // 页面加载完成后注入官方主题协议（colorScheme + data-ds-dark-theme）
   mainWindow.webContents.on('did-finish-load', () => {
     applyThemeToMainWindow();
+    // 内核 URL 解析自检：旧内核（Chromium 126）本身解析不出 host，
+    // 由 preload 兼容层兜底（compat=true）。两者都不成立时才说明修复失效。
+    const wc = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null;
+    if (wc && !wc.isDestroyed()) {
+      wc.executeJavaScript(
+        `(function () { try { var u = new URL('dsh-resource://file/x'); return u.hostname + '|' + u.pathname + '|compat=' + (window.URL.prototype.__dshResourceCompat === true); } catch (e) { return 'ERR:' + e.message; } })()`
+      ).then((r) => logLine(`[url-compat] dsh-resource 解析 = ${r}`)).catch(() => {});
+    }
   });
-  mainWindow.loadURL(`http://${host}:${port}`);
-  mainWindow.once('ready-to-show', () => mainWindow.show());
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http')) shell.openExternal(url);
     return { action: 'deny' };
   });
+  // 新版 dsh Web UI 有浏览器会话认证：主窗口必须先用「带 token 的 URL」打开
+  // 一次（换取 cookie），否则裸地址会被 401 拦截。resolveMainUiUrl 会优先用
+  // 已捕获的认证 URL；若服务无需认证（老版 dsh）则直接用裸地址立即打开。
+  try {
+    const mainUiUrl = await resolveMainUiUrl(port, 25000);
+    if (winRef.isDestroyed() || mainWindow !== winRef) return; // 等待期间窗口已被关闭/重建
+    if (webAuthUrl) logLine(`[认证] 主界面使用带 token 的 URL 打开`);
+    winRef.loadURL(mainUiUrl);
+    winRef.once('ready-to-show', () => winRef.show());
+  } catch (e) {
+    logLine(`[认证] 主界面 URL 解析失败，回退裸地址：${e.message}`);
+    if (!winRef.isDestroyed() && mainWindow === winRef) {
+      winRef.loadURL(`http://${host}:${port}`);
+      winRef.once('ready-to-show', () => winRef.show());
+    }
+  }
   // 关闭主窗口时：弹原生确认框（响应快、零延迟），让用户选择
   //   - 退出 Web 界面：关闭 WebUI 窗口，回到引导台（服务继续后台运行）
   //   - 退出 APP：清理服务后完全退出
@@ -3195,8 +3800,9 @@ app.whenReady().then(() => {
   // 读取持久化的「移动端远程控制」开关：开启后 dsh web 监听 0.0.0.0（手机扫码/局域网访问）
   remoteControl = loadAppConfig().remoteControl === true;
   if (remoteControl) logLine('[设置] 移动端远程控制已开启：dsh web 将监听所有网卡（0.0.0.0），重启服务后生效');
-  // 主题：先以官方 settings.yaml 为准对齐一次（消除 app-config 与官方 WebUI 的
-  // 不一致），再应用原生层（标题栏/系统弹窗跟随）+ 监听官方 settings.yaml 反向同步
+  // 主题：先以官方「生效中的主题偏好」为准对齐一次（消除 app-config 与官方 WebUI 的
+  // 不一致），再应用原生层（标题栏/系统弹窗跟随）+ 监听官方设置的落点文件反向同步
+  // （dsh 0.1.7 起是 profile/home 的 cordis.patch.yml，旧版是 settings.yaml）
   syncThemeFromOfficial();
   applyNativeTheme();
   watchDshSettings();
@@ -3572,7 +4178,11 @@ function resolveEffectiveTheme() {
   return nativeTheme.shouldUseDarkColors ? 'dark' : 'light';
 }
 
-// 启动时以官方 settings.yaml 的 ui-theme.preference 为准，回写 app-config。
+// 启动时以官方「生效中的主题偏好」为准，回写 app-config。
+// 读取优先级（与官方一致）：home patch > profile patch > settings.yaml > .imported
+//   - dsh 0.1.7 起设置存到 profile 的 cordis.patch.yml（- id: ui-theme / config.preference）；
+//   - 旧 settings.yaml 只在 0.1.7 首次启动时被导入一次，随后改名为 settings.yaml.imported，
+//     因此这里仍把它作为低优先级来源读取，兼容尚未升级的运行时。
 // 原因：桌面端与官方 WebUI 主题需双向同步；若上次在 WebUI 里改过主题而桌面端
 // 未运行（或反向监听没捕获到），app-config 会残留旧值。若不先对齐，后续
 // did-finish-load 注入会拿 app-config 旧值覆盖官方实际主题，导致 WebUI 内切换
@@ -3580,15 +4190,20 @@ function resolveEffectiveTheme() {
 // 而 DOM 却被桌面端注入成了旧主题，视觉与状态脱节。
 function syncThemeFromOfficial() {
   try {
-    const official = dshSettings.readThemePreference();
-    if (!official) return;
+    const official = dshSettings.readThemePreferenceDetailed();
+    if (!official.value) return;
     const cfg = loadAppConfig();
-    if (cfg.theme !== official) {
-      cfg.theme = official;
+    if (cfg.theme !== official.value) {
+      cfg.theme = official.value;
       saveAppConfig();
-      logLine(`[主题] 启动时以官方设置同步为：${official === 'dark' ? '深色' : official === 'light' ? '浅色' : '跟随系统'}`);
+      logLine(`[主题] 启动时以官方设置（${official.source}）同步为：${themeLabel(official.value)}`);
     }
   } catch (e) { /* ignore */ }
+}
+
+// 主题档位的中文文案（日志/提示共用）
+function themeLabel(t) {
+  return t === 'dark' ? '深色' : t === 'light' ? '浅色' : '跟随系统';
 }
 
 // 把主题应用到 Electron 原生层（标题栏 / 系统弹窗 / 右键菜单跟随）
@@ -3641,7 +4256,8 @@ function applyThemeToMainWindow() {
   } catch (e) { /* 窗口可能尚未 ready */ }
 }
 
-// 主题统一入口：设置偏好 -> 持久化 app-config -> 同步官方 settings.yaml
+// 主题统一入口：设置偏好 -> 持久化 app-config -> 同步官方存储
+// （0.1.7+ 写 profile 的 cordis.patch.yml；旧的 settings.yaml 存在时同步写）
 // -> 应用原生层 -> 应用官方 WebUI -> 广播到控制面板
 function setThemePreference(theme) {
   const t = ['dark', 'light', 'system'].includes(theme) ? theme : 'system';
@@ -3649,51 +4265,66 @@ function setThemePreference(theme) {
   cfg.theme = t;
   saveAppConfig();
 
-  // 同步官方 WebUI 主题偏好（~/.dsh/settings.yaml 的 ui-theme.preference）
   const sync = dshSettings.writeThemePreference(t);
+  const synced = (sync.targets || []).map((x) => `${x.target}${x.changed ? '(已写入)' : '(已一致)'}`);
 
   // 应用各处
   applyNativeTheme();
   applyThemeToMainWindow();
   broadcastTheme();
-  logLine(`[主题] 已切换为${t === 'dark' ? '深色' : t === 'light' ? '浅色' : '跟随系统'}（官方同步：${sync.changed ? '已写入' : '已一致'}）`);
+  if (!sync.ok) {
+    logLine(`[主题] 已切换为${themeLabel(t)}；同步官方设置失败：${sync.error}`);
+  } else {
+    logLine(`[主题] 已切换为${themeLabel(t)}（官方同步：${synced.length ? synced.join(' / ') : '无需同步'}）`);
+  }
   return { ok: true, theme: t, resolved: resolveEffectiveTheme() };
 }
 
-// 反向同步：监听官方 settings.yaml（~/.dsh/settings.yaml）的 ui-theme.preference。
-// 官方 WebUI 自己的设置页切换主题时写入该文件，这里感知变化并同步到控制面板。
-let settingsWatcher = null;
+// 反向同步：监听官方设置的落点文件。
+//   - dsh 0.1.7+：profile 的 cordis.patch.yml（- id: ui-theme / config.preference）
+//     以及优先级更高的 home patch（~/.dsh/cordis.patch.yml）；
+//   - 旧运行时：~/.dsh/settings.yaml（0.1.7 导入后改名为 settings.yaml.imported）。
+// 官方 WebUI 自己的设置页切换主题时写入上述文件，这里感知变化并同步到控制面板。
+let settingsWatchers = [];
 let settingsWatchTimer = null;
 function watchDshSettings() {
-  const file = dshSettings.settingsYamlPath();
   const onChange = () => {
     // fs.watch 可能重复触发，合并为一次延迟处理
     clearTimeout(settingsWatchTimer);
     settingsWatchTimer = setTimeout(() => {
       try {
-        const official = dshSettings.readThemePreference();
-        if (!official) return;
+        const official = dshSettings.readThemePreferenceDetailed();
+        if (!official.value) return;
         const cfg = loadAppConfig();
-        if (cfg.theme !== official) {
-          cfg.theme = official;
+        if (cfg.theme !== official.value) {
+          cfg.theme = official.value;
           saveAppConfig();
           applyNativeTheme();
           applyThemeToMainWindow();
           broadcastTheme();
-          logLine(`[主题] 官方 WebUI 中主题已切换为${official === 'dark' ? '深色' : official === 'light' ? '浅色' : '跟随系统'}，控制面板已同步`);
+          logLine(`[主题] 官方 WebUI 中主题已切换为${themeLabel(official.value)}（来源 ${official.source}），控制面板已同步`);
         }
       } catch (e) { /* ignore */ }
     }, 300);
   };
   try {
-    // 目录级 watch 更稳（文件可能被原子替换/重建）
-    const dir = path.dirname(file);
-    if (!fs.existsSync(dir)) return;
-    settingsWatcher = fs.watch(dir, (evt, name) => {
-      if (name === 'settings.yaml' || name === 'settings.yml') onChange();
-    });
+    // 清理旧监听（重启服务时会重新挂载）
+    for (const w of settingsWatchers) {
+      try { w.close(); } catch (e) { /* ignore */ }
+    }
+    settingsWatchers = [];
+    for (const t of dshSettings.watchTargets()) {
+      if (!fs.existsSync(t.dir)) continue;
+      try {
+        // 目录级 watch 更稳（文件可能被原子替换/重建）
+        const w = fs.watch(t.dir, (evt, name) => {
+          if (name && t.names.includes(String(name))) onChange();
+        });
+        settingsWatchers.push(w);
+      } catch (e) { /* 单个目录监听失败不影响其他 */ }
+    }
   } catch (e) {
-    settingsWatcher = null;
+    settingsWatchers = [];
   }
 }
 
@@ -4173,13 +4804,21 @@ ipcMain.handle('dsh:version-info', async () => {
   } catch (e) {
     error = e.message;
   }
+  // 只有候选版本「严格新于」当前运行版本才算可更新：避免运行预发布版
+  // （如 0.1.7-rc.2）时把更旧的正式版（如 0.1.5-rc.3）误报成"有新版"并引导降级。
+  const latestNewer = isNewerDshVersion(latest, running);
+  const nextNewer = isNewerDshVersion(next, running);
   return {
     ok: !error,
     running,
     latest,
     next,
-    // outdated：正式版或预发布版任一与当前运行版本不同即视为有可更新版本
-    outdated: !!(running && ((latest && running !== latest) || (next && running !== next))),
+    // 供界面直接使用，避免在渲染层重复实现 semver 比较
+    latestNewer,
+    nextNewer,
+    // 当前版本已高于正式版渠道（预发布通道领先）——界面据此说明"无需更新"
+    aheadOfStable: !!(running && latest && compareDshVersions(running, latest) === 1),
+    outdated: !!(running && (latestNewer || nextNewer)),
     error,
     // 极速启动本地运行环境：固定目录位置与是否已安装（设置页「清除」功能用）
     localDir: localDshDir(),
@@ -4244,18 +4883,43 @@ function currentPluginOp(pkg) {
   return op ? op.type : null;
 }
 
+// ---- 运行时版本 & 插件兼容性公共逻辑（0.1.7 起官方会拒绝加载不兼容插件） ----
+
+// 同步解析当前 dsh 运行时版本：优先服务运行中上报的版本，其次本地运行环境
+// （极速启动固定目录）的 package.json。取不到返回 null（此时不做兼容性判定）。
+function resolveRuntimeVersionSync() {
+  const running = serviceState && serviceState.dshVersion ? String(serviceState.dshVersion).replace(/^v/, '') : null;
+  if (running) return running;
+  try {
+    const pkgPath = path.join(localDshDir(), 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      if (pkg && pkg.version) return String(pkg.version).replace(/^v/, '');
+    }
+  } catch (e) { /* ignore */ }
+  const reported = serviceState && serviceState.dshVersionReported ? String(serviceState.dshVersionReported).replace(/^v/, '') : null;
+  return reported || null;
+}
+
+// 兼容性判定所需的上下文（运行时版本 + profile 里的精确版本例外表）
+function pluginCompatOpts() {
+  const dir = pluginMgr.profileDir();
+  return { runtimeVersion: resolveRuntimeVersionSync(), exemptions: pluginCompat.readExemptions(dir) };
+}
+
 // 查询推荐插件列表安装状态（叠加进行中的操作状态 opType + 全局忙碌标记）
 ipcMain.handle('plugin:status', async () => {
   try {
     const dir = pluginMgr.profileDir();
+    const opts = pluginCompatOpts();
     const list = pluginMgr.RECOMMENDED_PLUGINS.map((p) => ({
       pkg: p.pkg,
       title: p.title,
       desc: p.desc,
-      ...pluginMgr.pluginStatus(dir, p.pkg),
+      ...pluginMgr.pluginStatus(dir, p.pkg, opts),
       opType: currentPluginOp(p.pkg),
     }));
-    return { ok: true, list, busy: pluginOps.size > 0 };
+    return { ok: true, list, busy: pluginOps.size > 0, runtimeVersion: opts.runtimeVersion };
   } catch (e) {
     return { ok: false, error: e.message };
   }
@@ -4264,14 +4928,58 @@ ipcMain.handle('plugin:status', async () => {
 // 列出 profile 中所有已安装插件（叠加进行中的操作状态 opType）
 ipcMain.handle('plugin:list', async () => {
   try {
-    const list = pluginMgr.listInstalledPlugins(pluginMgr.profileDir()).map((p) => ({
+    const opts = pluginCompatOpts();
+    const list = pluginMgr.listInstalledPlugins(pluginMgr.profileDir(), opts).map((p) => ({
       ...p,
       opType: currentPluginOp(p.pkg),
     }));
-    return { ok: true, list };
+    return { ok: true, list, runtimeVersion: opts.runtimeVersion };
   } catch (e) {
     return { ok: false, error: e.message };
   }
+});
+
+// 兼容性总览：当前运行时版本、已授予的精确版本例外、不兼容插件清单
+ipcMain.handle('plugin:compat', async () => {
+  const dir = pluginMgr.profileDir();
+  const runtimeVersion = resolveRuntimeVersionSync();
+  const exemptions = pluginCompat.readExemptions(dir);
+  let list = [];
+  try {
+    list = pluginMgr.listInstalledPlugins(dir, { runtimeVersion, exemptions });
+  } catch (e) { /* ignore */ }
+  const incompatible = list
+    .filter((p) => p.compat && p.compat.constrained && !p.compat.allowed)
+    .map((p) => ({
+      pkg: p.pkg,
+      version: p.version,
+      target: `${p.compat.pkg || p.pkg}@${p.compat.version || p.version}`,
+      incompatible: pluginCompat.incompatibilityMessage(p.compat, runtimeVersion),
+    }));
+  return {
+    ok: true,
+    runtimeVersion,
+    exemptions,
+    compatibilityPath: pluginCompat.compatibilityPath(dir),
+    incompatible,
+  };
+});
+
+// 授予 / 撤销「精确版本例外」（写入 profile 的 compatibility.json，与官方 CLI 等价）。
+// acceptRisk 必须为 true——官方要求向用户明确说明风险后才允许写入。
+ipcMain.handle('plugin:set-exemption', async (e, payload) => {
+  payload = payload && typeof payload === 'object' ? payload : {};
+  if (payload.acceptRisk !== true) {
+    return { ok: false, error: '需要先确认风险（acceptRisk）才能授予版本例外' };
+  }
+  const runtimeVersion = payload.runtimeVersion || resolveRuntimeVersionSync();
+  if (!runtimeVersion) return { ok: false, error: '无法确定当前 dsh 运行时版本' };
+  const dir = pluginMgr.profileDir();
+  const res = pluginCompat.writeExemption(dir, payload.target, runtimeVersion, payload.enabled !== false);
+  if (res.ok) {
+    logLine(`[插件] 版本例外${payload.enabled === false ? '已撤销' : '已授予'}：${payload.target} @ dsh ${runtimeVersion}（重启服务后生效）`);
+  }
+  return res;
 });
 
 // 简单 semver 比较：返回 1 表示 a>b，-1 表示 a<b，0 相等。忽略 v 前缀与预发布标识。
@@ -4364,7 +5072,7 @@ function setCurrentRegistry(url) {
 
 // 统一安装入口：支持包名（字符串）或解析后的安装内容（{ ok, type, pkg?|command?, tokens? }）。
 // pkg 缺省为推荐插件。
-async function doInstallPlugin(input) {
+async function doInstallPlugin(input, opts) {
   const nodeExe = await findNodeExe();
   const npmCli = await findNpmCli();
   if (!nodeExe || !npmCli) {
@@ -4392,12 +5100,94 @@ async function doInstallPlugin(input) {
   if (parsed.type === 'command') {
     return await runInstallCommand(parsed, nodeExe, npmCli);
   }
-  return await runInstallPkg(parsed.pkg, nodeExe, npmCli);
+  return await runInstallPkg(parsed.pkg, nodeExe, npmCli, opts);
+}
+
+// 安装前兼容性预检（等价于官方 `dsh plugin add` 在跑 pnpm 之前做的检查）：
+// 通过 registry 查询该 spec 选中版本的 peerDependencies，与当前 dsh 运行时比较。
+// 返回 { skipped } 表示无法预检（本地 tarball / 查询失败），此时交由安装后复核。
+async function preflightPluginCompat(name, nodeExe, npmCli, runtimeVersion, exemptions) {
+  if (!runtimeVersion) return { skipped: 'unknown-runtime' };
+  // 本地 tarball / 目录：无法从 registry 预检，安装后复核
+  if (/\.(tgz|tar\.gz)$/i.test(name) || /^[a-zA-Z]:[\\/]/.test(name) || name.startsWith('.') || name.startsWith('/')) {
+    return { skipped: 'local-spec' };
+  }
+  for (const reg of pluginRegistryAttempts()) {
+    const r = await runCommand(
+      nodeExe,
+      [npmCli, 'view', name, 'version', 'peerDependencies', '--json', '--registry', reg, '--no-audit', '--no-fund'],
+      { env: cleanServiceEnv() },
+      () => {}
+    );
+    const text = String(r.out || '').trim();
+    if (!text) continue;
+    let data = null;
+    try { data = JSON.parse(text); } catch (e) { continue; }
+    if (Array.isArray(data)) data = data[data.length - 1];
+    if (!data || typeof data !== 'object') continue;
+    const peers = pluginCompat.dshPeersOfManifest({ peerDependencies: data.peerDependencies || {} });
+    const names = Object.keys(peers);
+    if (names.length === 0) return { skipped: 'no-dsh-peer', version: data.version || null, registry: reg };
+    const unsatisfied = names.filter((n) => pluginCompat.satisfies(runtimeVersion, peers[n]) !== true);
+    const version = data.version || null;
+    const target = `${name}@${version || ''}`;
+    const exempted = !!(version && exemptions && Array.isArray(exemptions[target])
+      && exemptions[target].includes(runtimeVersion));
+    return {
+      skipped: null,
+      registry: reg,
+      version,
+      target,
+      peers,
+      unsatisfied,
+      exempted,
+      compatible: unsatisfied.length === 0,
+    };
+  }
+  return { skipped: 'registry-query-failed' };
 }
 
 // 标准安装流程：依次尝试镜像池，失败自动换下一个镜像
-async function runInstallPkg(name, nodeExe, npmCli) {
+// opts: { acceptRisk } —— acceptRisk=true 表示用户已确认风险（授予例外后可继续装）
+async function runInstallPkg(name, nodeExe, npmCli, opts) {
   await ensureRegistrySelected();
+  const acceptRisk = !!(opts && opts.acceptRisk);
+  const runtimeVersion = resolveRuntimeVersionSync();
+  const exemptions = pluginCompat.readExemptions(pluginMgr.profileDir());
+
+  // 安装前预检：不兼容时按官方语义「在写入任何内容之前失败」，并给出授予例外的入口
+  if (!acceptRisk) {
+    const pre = await preflightPluginCompat(name, nodeExe, npmCli, runtimeVersion, exemptions);
+    if (pre && pre.compatible === false && !pre.exempted) {
+      const info = {
+        pkg: name,
+        version: pre.version,
+        peers: pre.peers,
+        unsatisfied: pre.unsatisfied.map((n) => ({ name: n, range: pre.peers[n] })),
+        constrained: true,
+        invalidRange: false,
+        compatible: false,
+        exempted: false,
+      };
+      const message = '安装已取消：' + pluginCompat.incompatibilityMessage(info, runtimeVersion);
+      logLine('[插件] ' + message);
+      broadcast('plugin:event', { stage: 'error', pkg: name, message });
+      return {
+        ok: false,
+        incompatible: true,
+        error: message,
+        compat: info,
+        target: pre.target,
+        runtimeVersion,
+        canExempt: true,
+      };
+    }
+    if (pre && pre.compatible === true) {
+      logLine(`[插件] 兼容性预检通过：${name}@${pre.version || ''} 声明的 dsh peer 满足当前运行时 ${runtimeVersion}`);
+    } else if (pre && pre.skipped === 'no-dsh-peer') {
+      logLine(`[插件] ${name} 未声明 dsh peerDependencies 约束，按官方语义不做版本限制`);
+    }
+  }
   setPluginOp(name, { type: 'install', startedAt: Date.now() });
   try {
     let r = null;
@@ -4413,6 +5203,8 @@ async function runInstallPkg(name, nodeExe, npmCli) {
         npmCli,
         registry: reg,
         pkg: name,
+        runtimeVersion,
+        exemptions,
         onOut: (s) => {
           const line = String(s).replace(/\r?\n$/, '');
           logLine('[插件] ' + line);
@@ -4430,10 +5222,24 @@ async function runInstallPkg(name, nodeExe, npmCli) {
       logLine(`[镜像] ${registryLabel(reg)} 不可用（${(r.error || '安装失败').slice(0, 80)}），尝试下一个镜像`);
     }
     if (r.ok) {
+      // 安装后复核（tarball / 目录安装等无法预检的情况）：0.1.7 起不兼容的插件
+      // 会被官方拒绝加载，这里必须明确告知，而不是让用户以为装好就能用。
+      const info = r.compat;
+      const blocked = !!(info && info.constrained && !info.allowed);
+      if (blocked) {
+        const message = pluginCompat.incompatibilityMessage(info, runtimeVersion);
+        logLine('[插件] ' + message);
+        broadcast('plugin:event', { stage: 'warn', pkg: name, message });
+        notify('插件与当前 dsh 不兼容', message);
+        r.incompatible = true;
+        r.incompatibilityMessage = message;
+        r.target = `${info.pkg || name}@${info.version || ''}`;
+        r.canExempt = true;
+      }
       broadcast('plugin:event', {
         stage: 'done',
         pkg: name,
-        message: `安装完成（v${r.version || '未知版本'}）${r.bundled ? '，已注册到 profile bundles' : ''}`,
+        message: `安装完成（v${r.version || '未知版本'}）${r.bundled ? '，已注册到 profile bundles' : ''}${blocked ? '；但该插件与当前 dsh 运行时声明不兼容，官方会拒绝加载它（见上方提示）' : ''}`,
       });
       notify('插件安装完成', `${name} v${r.version || ''} 已安装，重新运行服务后生效。`);
     } else {
@@ -4631,14 +5437,16 @@ function failInstall(_opKey, message) {
 // 一键安装推荐插件（pkg 缺省为 @feiyang666/dsh-usage-plugin）
 ipcMain.handle('plugin:install', async (e, payload) => {
   const pkg = payload && typeof payload === 'object' ? payload.pkg : null;
-  return await doInstallPlugin(pkg || null);
+  const opts = { acceptRisk: !!(payload && payload.acceptRisk === true) };
+  return await doInstallPlugin(pkg || null, opts);
 });
 
 // 自定义包名 / 安装命令安装：支持任意格式，不做限制
 // （纯包名 / npm install xxx / npx @deepseek-ai/dsh plugin --profile web add xxx / node / pnpm ...）
 ipcMain.handle('plugin:install-custom', async (e, payload) => {
   const input = payload && typeof payload === 'object' ? payload.pkg : payload;
-  return await doInstallPlugin(input || '');
+  const opts = { acceptRisk: !!(payload && payload.acceptRisk === true) };
+  return await doInstallPlugin(input || '', opts);
 });
 
 // 统一卸载入口：pkg 缺省为推荐插件
@@ -4747,5 +5555,6 @@ ipcMain.handle('plugin:market-install', async (e, payload) => {
     broadcast('plugin:event', { stage: 'error', message: '未识别到可安装的包名' });
     return { ok: false, error: '未识别到可安装的包名' };
   }
-  return await doInstallPlugin(name);
+  const opts = { acceptRisk: !!(payload && payload.acceptRisk === true) };
+  return await doInstallPlugin(name, opts);
 });

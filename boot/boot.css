@@ -965,6 +965,8 @@ html[data-theme="dark"] .log-line.ex { color: #4ade80; }
   word-break: break-word;
 }
 .plugin-status { font-size: 12px; color: var(--muted); margin-top: 5px; line-height: 1.5; }
+.plugin-rec.incompat .plugin-status { color: #e5534b; }
+html[data-theme="dark"] .plugin-rec.incompat .plugin-status { color: #ff7b72; }
 .plugin-rec-actions {
   display: flex; flex-direction: column; gap: 8px;
   flex-shrink: 0;
@@ -1029,6 +1031,27 @@ html[data-theme="dark"] .plugin-rec-actions .settings-btn.migrate {
 html[data-theme="dark"] .installed-badge.updatable {
   background: rgba(180, 83, 9, 0.18);
   color: #fbbf24;
+}
+/* 与当前 dsh 运行时声明不兼容（0.1.7 起官方会拒绝加载该插件） */
+.installed-badge.incompat {
+  background: rgba(229, 83, 75, 0.12);
+  color: #e5534b;
+  border: 1px solid rgba(229, 83, 75, 0.35);
+}
+html[data-theme="dark"] .installed-badge.incompat {
+  background: rgba(229, 83, 75, 0.2);
+  color: #ff7b72;
+}
+.settings-btn.warn {
+  background: rgba(229, 83, 75, 0.1);
+  color: #e5534b;
+  border-color: rgba(229, 83, 75, 0.4);
+}
+.settings-btn.warn:hover:not(:disabled) { background: rgba(229, 83, 75, 0.18); }
+html[data-theme="dark"] .settings-btn.warn {
+  background: rgba(229, 83, 75, 0.18);
+  color: #ff7b72;
+  border-color: rgba(229, 83, 75, 0.45);
 }
 .installed-actions {
   display: flex;

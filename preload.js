@@ -143,12 +143,17 @@ contextBridge.exposeInMainWorld('dsh', {
   // 检测已安装插件的更新（对比 npm registry 最新版本）
   checkPluginUpdates: () => ipcRenderer.invoke('plugin:check-updates'),
   // 一键安装推荐插件（pkg 缺省为 @feiyang666/dsh-usage-plugin）
-  installPlugin: (pkg) => ipcRenderer.invoke('plugin:install', { pkg: pkg || null }),
+  // acceptRisk=true 表示用户已确认「与当前 dsh 运行时版本不兼容」的风险
+  installPlugin: (pkg, acceptRisk) => ipcRenderer.invoke('plugin:install', { pkg: pkg || null, acceptRisk: acceptRisk === true }),
   // 自定义包名 / 安装命令安装插件
-  installCustomPlugin: (pkg) => ipcRenderer.invoke('plugin:install-custom', { pkg }),
+  installCustomPlugin: (pkg, acceptRisk) => ipcRenderer.invoke('plugin:install-custom', { pkg, acceptRisk: acceptRisk === true }),
   // 卸载插件（pkg 缺省为推荐插件）
   uninstallPlugin: (pkg) => ipcRenderer.invoke('plugin:uninstall', { pkg: pkg || null }),
-  // 插件安装/卸载进度事件（installing/uninstalling/done/error）
+  // 插件与当前 dsh 运行时的兼容性总览（运行时版本 / 精确版本例外 / 不兼容清单）
+  getPluginCompat: () => ipcRenderer.invoke('plugin:compat'),
+  // 授予或撤销「精确版本例外」（写入 profile 的 compatibility.json）
+  setVersionExemption: (payload) => ipcRenderer.invoke('plugin:set-exemption', payload || {}),
+  // 插件安装/卸载进度事件（installing/uninstalling/done/warn/error）
   onPluginEvent: (cb) => {
     const listener = (_e, d) => cb(d);
     ipcRenderer.on('plugin:event', listener);
@@ -158,6 +163,6 @@ contextBridge.exposeInMainWorld('dsh', {
   // ---- 插件市场（扫描 GitHub topic:dsh-plugin） ----
   // 获取插件市场列表（{ keyword, page, perPage }）
   listMarket: (payload) => ipcRenderer.invoke('plugin:market-list', payload || {}),
-  // 一键安装市场插件（按 npm 包名）
-  installMarketPlugin: (pkg) => ipcRenderer.invoke('plugin:market-install', { pkg }),
+  // 一键安装市场插件（按 npm 包名）；acceptRisk=true 表示已确认不兼容风险
+  installMarketPlugin: (pkg, acceptRisk) => ipcRenderer.invoke('plugin:market-install', { pkg, acceptRisk: acceptRisk === true }),
 });
