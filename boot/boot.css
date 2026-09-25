@@ -4,39 +4,51 @@
 [hidden] { display: none !important; }
 
 :root {
-  --bg: #f5f5f5;
+  /* ---- 配色：对齐 DeepSeek 官网 design token（www.deepseek.com / chat.deepseek.com） ---- */
+  --bg: #f9f8f8;                /* --ds-color-bg-page（浅色） */
   --panel: #ffffff;
-  --border: #e0e0e0;
-  --text: #191919;
-  --muted: #808080;
-  --accent: #07c160;            /* 微信绿，单一强调色 */
-  --accent-weak: rgba(7, 193, 96, 0.12);
-  --green: #07c160;
+  --border: #e5e5e6;            /* 中性 200 */
+  --text: #1e232c;              /* --ds-color-text-primary */
+  --muted: #7f8287;             /* 中性 500 */
+  --accent: #4d6bfe;            /* --ds-color-brand（浅色） */
+  --accent-weak: rgba(77, 107, 254, 0.10);
+  --green: #22c55e;
   --red: #e64340;
-  --yellow: #ff9c00;
-  --blue: #10aeff;
+  --yellow: #f59e0b;
+  --blue: #3b82f6;
 
-  --btn-bg: #f2f2f2;
-  --btn-bg-hover: #e6e6e6;
-  --field-bg: #f2f2f2;
-  --log-bg: #f7f7f7;
+  --btn-bg: #f5f5f5;            /* 中性 100 */
+  --btn-bg-hover: #ebebeb;
+  --field-bg: #f5f5f5;
+  --log-bg: #f5f5f5;
   --log-text: #353535;
-  --placeholder: #b2b2b2;
+  --placeholder: #8691a1;       /* --ds-color-text-placeholder */
   --err-text: #e64340;
   --logo-bg: #ffffff;           /* Logo 瓷块背景（始终白底，配黑色 logo，深浅色主题统一） */
-  --primary: #07c160;
-  --primary-hover: #06ad56;
+  --primary: #4d6bfe;
+  --primary-hover: #3a65c2;     /* --ds-color-brand-deep */
   --danger: #e64340;
   --danger-hover: #d13a37;
   --danger-border: #e64340;
+  /* ---- 圆角体系：对齐官网 --ds-radius-* ---- */
+  --r-sm: 8px;                  /* --ds-radius-sm */
+  --r-input: 10px;              /* --ds-radius-input */
+  --r-media: 12px;              /* --ds-radius-media */
+  --r-panel: 16px;              /* --ds-radius-panel */
+  --r-card: 24px;               /* --ds-radius-card */
+  --r-pill: 100px;              /* --ds-radius-pill */
+  /* ---- 阴影 ---- */
+  --shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --shadow-card: 0 2px 8px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-modal: 0 24px 64px rgba(16, 24, 40, 0.18);
   /* 侧边栏（浅色主题） */
-  --sidebar-bg: #f0f0f0;
-  --sidebar-text: #555555;
-  --sidebar-active: #e2e2e2;
-  --sidebar-active-text: #191919;
-  --sidebar-muted: #9a9a9a;
-  --sidebar-border: rgba(0, 0, 0, 0.08);
-  --sidebar-hover: rgba(0, 0, 0, 0.05);
+  --sidebar-bg: #f5f5f5;
+  --sidebar-text: #5c6270;
+  --sidebar-active: rgba(77, 107, 254, 0.10);
+  --sidebar-active-text: #1e232c;
+  --sidebar-muted: #8691a1;
+  --sidebar-border: rgba(0, 0, 0, 0.07);
+  --sidebar-hover: rgba(0, 0, 0, 0.045);
   /* 滚动条（浅色主题） */
   --scrollbar-thumb: rgba(0, 0, 0, 0.22);
   --scrollbar-thumb-hover: rgba(0, 0, 0, 0.35);
@@ -45,38 +57,43 @@
 
 /* ============ 深色主题（默认） ============ */
 html[data-theme="dark"] {
-  --bg: #111111;
-  --panel: #1e1e1e;
-  --border: #2c2c2c;
-  --text: #e6e6e6;
-  --muted: #999999;
-  --accent: #07c160;
-  --accent-weak: rgba(7, 193, 96, 0.14);
-  --green: #07c160;
+  /* ---- 配色：对齐官网深色 token ---- */
+  --bg: #0a0a0a;                /* --ds-color-bg-page（深色） */
+  --panel: #1a1a1a;             /* 约等于 surface-1（6% 白）叠在 #0a0a0a 上 */
+  --border: rgba(255, 255, 255, 0.10);   /* --ds-color-border-default */
+  --text: #ffffff;              /* --ds-color-text-primary（深色） */
+  --muted: rgba(255, 255, 255, 0.56);    /* --ds-color-text-description */
+  --accent: #6799fe;            /* --ds-color-brand（深色） */
+  --accent-weak: rgba(103, 153, 254, 0.16);
+  --green: #22c55e;
   --red: #fa5151;
-  --yellow: #ff9c00;
-  --blue: #10aeff;
+  --yellow: #f59e0b;
+  --blue: #3b82f6;
 
-  --btn-bg: #2c2c2c;
-  --btn-bg-hover: #383838;
-  --field-bg: #2a2a2a;
-  --log-bg: #151515;
+  --btn-bg: rgba(255, 255, 255, 0.08);   /* --ds-color-bg-input */
+  --btn-bg-hover: rgba(255, 255, 255, 0.14);
+  --field-bg: rgba(255, 255, 255, 0.08);
+  --log-bg: #141414;
   --log-text: #d0d0d0;
-  --placeholder: #666;
+  --placeholder: hsla(0, 0%, 100%, 0.3); /* --ds-color-text-placeholder */
   --err-text: #fa5151;
   --logo-bg: #ffffff;           /* Logo 瓷块背景（始终白底，配黑色 logo，深浅色主题统一） */
-  --primary: #07c160;
-  --primary-hover: #06ad56;
+  --primary: #6799fe;
+  --primary-hover: #4d6bfe;
   --danger: #fa5151;
   --danger-hover: #d94242;
   --danger-border: #fa5151;
+  /* ---- 阴影（深色下更收敛） ---- */
+  --shadow-panel: none;
+  --shadow-card: 0 2px 10px rgba(0, 0, 0, 0.45);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.6);
   /* 侧边栏（深色主题） */
-  --sidebar-bg: #181818;
-  --sidebar-text: #b3b3b3;
-  --sidebar-active: #262626;
+  --sidebar-bg: #101010;
+  --sidebar-text: rgba(255, 255, 255, 0.72);
+  --sidebar-active: rgba(103, 153, 254, 0.16);
   --sidebar-active-text: #ffffff;
-  --sidebar-muted: #707070;
-  --sidebar-border: rgba(255, 255, 255, 0.06);
+  --sidebar-muted: rgba(255, 255, 255, 0.4);
+  --sidebar-border: rgba(255, 255, 255, 0.07);
   --sidebar-hover: rgba(255, 255, 255, 0.05);
   /* 滚动条（深色主题） */
   --scrollbar-thumb: rgba(255, 255, 255, 0.18);
@@ -120,17 +137,28 @@ html, body {
   display: flex;
   height: 100vh;
   width: 100vw;
+  /* 圆角 UI：整体留出 10px 边距 + 间距，让侧栏与内容区各自成为一张圆角卡片 */
+  padding: 10px;
+  gap: 10px;
+  background: var(--bg);
 }
 
 /* ---- 侧栏 ---- */
 .sidebar {
   width: 230px;
   flex-shrink: 0;
-  background: var(--sidebar-bg);
+  /* 浮层卡片：浅色=白、深色=#1a1a1a（比页面底色亮一档，与内容区形成层次） */
+  background: var(--panel);
   color: var(--sidebar-text);
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--sidebar-border);
+  /* 原来是贴边的一条 border-right，现在整块变成带边框的圆角卡片 */
+  border: 1px solid var(--sidebar-border);
+  border-radius: var(--r-panel);
+  box-shadow: var(--shadow-panel);
+  /* 窗口很矮时可滚动，避免底部（更新入口 / 版本号）被切掉 */
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 .sidebar-head {
   display: flex;
@@ -219,6 +247,56 @@ html, body {
   flex-shrink: 0;
 }
 .sidebar-dot.running { background: var(--accent); }
+
+/* ---- 侧栏常驻更新入口（发现新版本后一直显示，关闭更新弹窗也不消失） ---- */
+.sidebar-update {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  margin: 2px 0;
+  padding: 7px 9px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--sidebar-hover);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background .15s ease;
+}
+.sidebar-update:hover { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+.sidebar-update-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: sidebar-update-pulse 1.6s ease-in-out infinite;
+}
+/* 下载中 / 已下载：不必再闪烁 */
+.sidebar-update.steady .sidebar-update-dot { animation: none; }
+@keyframes sidebar-update-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .3; }
+}
+.sidebar-update-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.sidebar-update-version {
+  flex-shrink: 0;
+  font-family: "SFMono-Regular", Consolas, "Courier New", monospace;
+  font-size: 10.5px;
+  opacity: .9;
+}
+.sidebar-update-action { flex-shrink: 0; font-size: 11px; opacity: .8; }
+
 /* 侧栏底部版本号（桌面端 + dsh 两个） */
 .sidebar-versions {
   display: flex;
@@ -288,12 +366,29 @@ html, body {
 .sidebar-repo-icon { width: 14px; height: 14px; display: inline-flex; flex-shrink: 0; }
 .sidebar-repo-icon svg { width: 14px; height: 14px; display: block; }
 
-/* ---- 内容区 ---- */
+/* ---- 内容区：同样是一张圆角卡片（浮在页面底色上） ---- */
 .content {
   flex: 1;
   min-width: 0;
   position: relative;
   overflow: hidden;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-panel);
+}
+
+/* 内容分层：卡片类元素带极浅投影，与内容区底色拉开层次
+   （深色主题下 --shadow-panel 为 none，保持扁平，避免"发灰"） */
+.panel,
+.plugin-card,
+.mode-card,
+.mode-details,
+.status-panel,
+.status-update,
+.market-item,
+.dc-table-wrap,
+.log-panel {
+  box-shadow: var(--shadow-panel);
 }
 .view {
   position: absolute;
@@ -1614,3 +1709,312 @@ html[data-theme="dark"] .settings-btn.warn {
   .sidebar-versions { display: none; }
   .view { padding: 20px 16px; }
 }
+
+/* ============================================================
+   圆角 UI：统一到 DeepSeek 官网 design token
+   ------------------------------------------------------------
+   token 来源（实际抓取 www.deepseek.com / chat.deepseek.com 的 CSS）：
+     --ds-radius-sm:    8px      --ds-radius-input: 10px
+     --ds-radius-media: 12px     --ds-radius-panel: 16px
+     --ds-radius-card:  24px     --ds-radius-pill:  100px
+     聊天端：button 10px / modal 24px / dropdown 12px / code 12px
+   原来的圆角是 3~10px 的零散取值，这里按「面板 16 / 卡片 12 / 按钮·输入 10 /
+   小按钮 8 / 弹窗 24 / 徽标胶囊」统一，不再逐个改老规则。
+   ============================================================ */
+
+/* 字体：Inter 优先（官网字体栈），缺失时回退系统字体 */
+html, body {
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+/* ---- 面板 / 大容器 → 16px（--ds-radius-panel），浅色下加一层极浅投影 ---- */
+.panel,
+.plugin-card,
+.status-panel,
+.status-update,
+.first-install-tip,
+.remote-lan-item,
+.restart-hint,
+.mode-card,
+.dc-table-wrap,
+.dc-card,
+.market-toolbar,
+.update-modal-body,
+.custom-install-card,
+.installed-card {
+  border-radius: var(--r-panel);
+}
+.panel,
+.plugin-card {
+  box-shadow: var(--shadow-panel);
+}
+
+/* ---- 列表项 / 小卡片 / 代码块 / 日志块 → 12px（--ds-radius-media） ---- */
+.market-item,
+.plugin-rec,
+.plugin-note,
+.update-info,
+.update-notes,
+.log-view,
+.log-panel,
+.log-body,
+.log-progress,
+.market-loading,
+.market-empty,
+.task-item,
+.worker-item,
+.log-line-block {
+  border-radius: var(--r-media);
+}
+
+/* ---- 按钮 / 输入框 / 下拉 / 侧栏项 → 10px（--ds-radius-input） ---- */
+.btn,
+.settings-btn,
+.input,
+.select,
+textarea,
+input[type="text"],
+input[type="password"],
+input[type="number"],
+select,
+.market-input,
+.settings-input,
+.log-header,
+.nav-item,
+.sidebar-action,
+.sidebar-repo,
+.sidebar-update,
+.market-page {
+  border-radius: var(--r-input);
+}
+
+/* ---- 小按钮 → 8px（--ds-radius-sm） ---- */
+.btn-sm,
+.plugin-rec-actions .settings-btn,
+.log-actions .btn,
+.market-item-actions .btn,
+.status-actions .btn {
+  border-radius: var(--r-sm);
+}
+
+/* ---- 徽标 / 标签 / 状态芯片 → 胶囊 100px（--ds-radius-pill） ---- */
+.installed-badge,
+.market-badge,
+.mode-badge,
+.log-badge,
+.dc-badge,
+.chip-tag,
+.chip-warn,
+.status-plugin-chip,
+.sidebar-dot {
+  border-radius: var(--r-pill);
+}
+
+/* ---- 进度条 / 细轨 / 滚动条 → 胶囊 ---- */
+.bar,
+.bar-fill,
+.update-bar,
+.update-bar-fill,
+.log-progress-track,
+.log-progress-fill,
+.dc-bar,
+.dc-bar-fill,
+::-webkit-scrollbar-thumb {
+  border-radius: var(--r-pill);
+}
+
+/* ---- 图标瓷块 / 小方块 → 8px ---- */
+.sidebar-logo-tile,
+.about-logo-tile,
+.plugin-rec-icon,
+.market-item-icon,
+.update-modal-logo,
+.update-modal-logo-img {
+  border-radius: var(--r-sm);
+}
+
+/* ---- 弹窗 / 大面积浮层 → 24px（--ds-radius-card，对齐聊天端 modal token） ---- */
+.modal,
+.update-modal {
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-modal);
+}
+.modal-mask {
+  /* 背景虚化：对齐官网/聊天端的浮层观感 */
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+
+/* ---- 侧栏激活项：去掉左侧直角竖条，改为圆角高亮块（对齐 chat 端侧栏） ---- */
+.nav-item.active { border-radius: var(--r-input); }
+.nav-item.active::before { display: none; }
+
+/* ---- 键盘焦点环统一用品牌色 ---- */
+.btn:focus-visible,
+.settings-btn:focus-visible,
+.nav-item:focus-visible,
+.market-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ============================================================
+   圆角 UI · 第二档（整体加大一档）
+   ------------------------------------------------------------
+   第一档按官网 token 原值（panel 16 / input 10 / media 12 / card 24）；
+   这一档在官网基础上整体再圆一档，并把原本还是 4~8px 方角的组件
+   （模式卡片、<details> 折叠说明、开关、徽标、输入框、表格、日志块、
+   主题分段控件…）全部纳入统一体系。
+   ============================================================ */
+
+:root {
+  --r-xs: 8px;        /* 行内 code / 极小元素 */
+  --r-sm: 10px;       /* 小按钮 / 小方块 */
+  --r-input: 14px;    /* 按钮 / 输入框 / 侧栏项 / 分段控件 */
+  --r-media: 18px;    /* 列表项 / 卡片 / 日志块 */
+  --r-panel: 20px;    /* 面板 / 大容器 */
+  --r-card: 28px;     /* 弹窗 */
+  --r-pill: 100px;    /* 胶囊 */
+}
+
+/* ---- 面板 / 大容器 → 20px ---- */
+.panel,
+.plugin-card,
+.status-panel,
+.status-update,
+.first-install-tip,
+.remote-lan-item,
+.mode-card,
+.mode-details,
+.dc-table-wrap,
+.dc-card,
+.market-toolbar,
+.update-modal-body,
+.custom-install-card,
+.installed-card,
+.restart-hint,
+.log-panel {
+  border-radius: var(--r-panel);
+}
+
+/* ---- 列表项 / 卡片 / 日志块 / 更新说明 → 18px ---- */
+.market-item,
+.plugin-rec,
+.plugin-note,
+.update-info,
+.update-notes,
+.update-modal-notes,
+.log-view,
+.log-body,
+.log-progress,
+.market-loading,
+.market-empty,
+.task-item,
+.worker-item,
+.log-line-block {
+  border-radius: var(--r-media);
+}
+
+/* ---- 按钮 / 输入框 / 下拉 / 侧栏项 / 折叠标题 → 14px ---- */
+.btn,
+.settings-btn,
+.input,
+.select,
+textarea,
+select,
+input[type="text"],
+input[type="password"],
+input[type="number"],
+.market-input,
+.settings-input,
+.settings-text-input,
+.log-header,
+.nav-item,
+.sidebar-action,
+.sidebar-repo,
+.sidebar-update,
+.mode-btn,
+.mode-card .mode-btn,
+.mode-details > summary,
+.market-page {
+  border-radius: var(--r-input);
+}
+
+/* ---- 小按钮 / 图标方块 → 10px ---- */
+.btn-sm,
+.plugin-rec-actions .settings-btn,
+.log-actions .btn,
+.market-item-actions .btn,
+.status-actions .btn,
+.sidebar-logo-tile,
+.about-logo-tile,
+.plugin-rec-icon,
+.market-item-icon,
+.logo-tile,
+.update-modal-logo,
+.update-modal-logo-img {
+  border-radius: var(--r-sm);
+}
+
+/* ---- 徽标 / 芯片 / 状态点 → 胶囊 ---- */
+.installed-badge,
+.market-badge,
+.mode-badge,
+.log-badge,
+.dc-badge,
+.chip-tag,
+.chip-warn,
+.status-plugin-chip,
+.sidebar-dot {
+  border-radius: var(--r-pill);
+}
+
+/* ---- 进度条 / 开关 / 滚动条 → 胶囊 ---- */
+.bar,
+.bar-fill,
+.update-bar,
+.update-bar-fill,
+.log-progress-track,
+.log-progress-fill,
+.dc-bar,
+.dc-bar-fill,
+.settings-switch .slider,
+::-webkit-scrollbar-thumb {
+  border-radius: var(--r-pill);
+}
+
+/* ---- 弹窗 → 28px ---- */
+.modal,
+.update-modal {
+  border-radius: var(--r-card);
+}
+
+/* ---- 展开状态下的折叠标题：只圆上面两个角，和下面的内容连成一体 ---- */
+.mode-details[open] > summary {
+  border-radius: var(--r-input) var(--r-input) 0 0;
+}
+
+/* ---- 行内代码 / 小标签 ---- */
+code,
+kbd,
+.mode-details-body code {
+  border-radius: var(--r-xs);
+}
+
+/* ---- 主题切换：改成圆角分段控件（对齐 chat 端 segmented token） ---- */
+.theme-toggle {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--field-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--r-input);
+}
+.theme-toggle .btn {
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  border-radius: var(--r-sm);
+}
+.theme-toggle .btn:hover:not(:disabled) { background: var(--btn-bg-hover); }
+.theme-toggle .btn.active { background: var(--accent); color: #fff; }

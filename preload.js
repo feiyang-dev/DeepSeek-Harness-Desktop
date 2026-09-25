@@ -134,6 +134,12 @@ contextBridge.exposeInMainWorld('dsh', {
     ipcRenderer.on('update:status', listener);
     return () => ipcRenderer.removeListener('update:status', listener);
   },
+  // 「打开更新入口」事件：系统通知被点击后，主进程把窗口拉到前台并让界面定位到更新区域
+  onUpdateFocus: (cb) => {
+    const listener = (_e, payload) => cb(payload);
+    ipcRenderer.on('update:focus', listener);
+    return () => ipcRenderer.removeListener('update:focus', listener);
+  },
 
   // ---- 插件管理（推荐插件 + 自定义包名安装） ----
   // 查询推荐插件列表安装状态（[{ pkg, title, desc, installed, version, bundled }]）

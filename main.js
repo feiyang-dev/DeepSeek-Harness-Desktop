@@ -4358,13 +4358,47 @@ function formatBytes(bytes) {
 }
 
 // 系统通知（受通知开关控制）
-function notify(title, body) {
+// onClick 可选：点击通知后的动作；缺省为把控制面板窗口拉到前台
+function notify(title, body, onClick) {
   try {
     const cfg = loadAppConfig();
     if (cfg.notifications === false) return;
     if (!Notification.isSupported()) return;
-    new Notification({ title, body, icon: themedAppIcon(32) }).show();
+    const n = new Notification({ title, body, icon: themedAppIcon(32) });
+    // 之前通知点击毫无反应：这里补上点击处理（默认聚焦窗口，按需导航）
+    n.on('click', () => {
+      try {
+        if (typeof onClick === 'function') onClick();
+        else focusBootWindow();
+      } catch (e) { /* ignore */ }
+    });
+    n.show();
   } catch (e) { /* ignore */ }
+}
+
+// 把控制面板窗口恢复到前台（最小化 / 托盘隐藏 / 被遮挡都能恢复），
+// 可选向渲染层发送导航信号（nav 非空时让界面跳到指定位置，如「检查更新」）。
+function focusBootWindow(nav) {
+  try {
+    const win = (bootWindow && !bootWindow.isDestroyed()) ? bootWindow
+      : (mainWindow && !mainWindow.isDestroyed()) ? mainWindow
+        : null;
+    if (!win) return false;
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    if (nav && win === bootWindow) {
+      // 等窗口真正显示后再通知渲染层，避免隐藏状态下滚动定位失效
+      setTimeout(() => {
+        try {
+          if (bootWindow && !bootWindow.isDestroyed()) bootWindow.webContents.send('update:focus', nav);
+        } catch (e) { /* ignore */ }
+      }, 150);
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 // ---------- HTTP 请求 ----------
@@ -4426,7 +4460,8 @@ async function checkUpdate() {
     const d = data.data;
     if (d.hasUpdate && d.latest) {
       updateStatus({ status: 'available', latest: d.latest, message: `发现新版本 v${d.latest.version}` });
-      notify('发现新版本', `${APP_NAME} v${d.latest.version} 已发布，可在设置中查看更新。`);
+      // 点击通知 → 把窗口拉到前台并打开更新入口（弹窗 / 设置里的「检查更新」区域）
+      notify('发现新版本', `${APP_NAME} v${d.latest.version} 已发布，点击查看更新。`, () => focusBootWindow({ mode: 'update' }));
     } else {
       updateStatus({ status: 'uptodate', latest: null, message: '已是最新版本' });
     }

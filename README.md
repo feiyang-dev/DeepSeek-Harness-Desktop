@@ -14,6 +14,18 @@
 
 ---
 
+## Screenshots
+
+> Taken from v1.13.1. The control panel follows the official DeepSeek design language (brand blue, unified corner radius, floating-card layout) and ships with refreshed dark and light themes.
+
+| Settings · "Check for updates" on top | Home · startup & mode picker |
+| --- | --- |
+| ![Settings](docs/screenshots/02-light-settings.png) | ![Home](docs/screenshots/01-light-home.png) |
+
+| New version · update dialog | Dark theme · downloading (progress in the sidebar) |
+| --- | --- |
+| ![Update dialog](docs/screenshots/03-light-popup.png) | ![Dark theme](docs/screenshots/05-dark-downloading.png) |
+
 ## Overview
 
 An Electron desktop shell that embeds the official DeepSeek Harness Web UI. On startup it lets you pick an **installation mode**, then automatically handles environment detection, installation, and service startup — with a **percentage progress bar** for every stage. When the service is ready, the main UI opens automatically.
@@ -90,9 +102,10 @@ The "Settings" entry (left navigation) opens the settings page:
 
 - **About**: app version, changelog
 - **Appearance**: interface theme with three options — **Dark / Light / Follow System** (persisted, takes effect immediately, **synced across the desktop client and the official Web UI — change it on either side and the other follows**). Since dsh 0.1.7 the official settings live in the current **Profile's plugin configuration** (`~/.dsh/profiles/<profile>/cordis.patch.yml`, entry `- id: ui-theme`); the legacy `~/.dsh/settings.yaml` is imported once and renamed to `settings.yaml.imported`. The desktop app resolves the effective value with the official precedence (home patch → profile patch → settings.yaml → `.imported`) and writes to both the profile patch and the still-present `settings.yaml`, so the two-way sync works on both dsh generations
-- **Notifications**: toggle for new-version system notifications (persisted)
+- **Notifications**: toggle for new-version system notifications (persisted); **clicking the system notification brings the app window to the front and opens the update entry** (other notifications focus the control panel)
+- **Visual refresh (v1.13.1)**: the control panel follows the official DeepSeek design language — brand blue accent (`#4d6bfe` light / `#6799fe` dark), a unified radius scale (panels 20px · modals 28px · cards & list rows 18px · buttons & inputs 14px · pill badges), and a floating-card layout for the sidebar and the content area. The official Web UI is left untouched
 - **Developer options**: toggle "Developer options mode" (persisted, applies on next launch)
-- **Check for updates**: auto-checks when entering settings; supports manual check, one-click download & install, live progress display, and SHA256 verification on completion
+- **Check for updates (first panel on the settings page)**: auto-checks when entering settings; supports manual check, one-click download & install, live progress display, and SHA256 verification on completion. After dismissing the startup update dialog with "Later", a **persistent "New version · Update now" entry stays at the bottom of the sidebar** (showing download progress, then "Install"), and clicking it jumps straight to the update panel at the top of the settings page
 
 ### Developer Options Mode (for frontend development)
 
@@ -186,7 +199,7 @@ dsh-desktop/
    [Restart] → re-runs the startup flow with the last chosen mode
 [Plugin Management] left nav → recommended one-click install / custom package install / uninstall from installed list
 [Plugin Market] left nav → scans GitHub topic:dsh-plugin → search / browse / one-click install
-[Settings] home → About / Notifications / Developer options / Check for updates (auto-check + download & install)
+[Settings] home → Check for updates (top of the page: auto-check + download & install) / About / Notifications / Developer options
 ```
 
 Key implementation details:

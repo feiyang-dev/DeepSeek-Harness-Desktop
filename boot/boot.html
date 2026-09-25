@@ -53,6 +53,14 @@
           <span class="sidebar-dot" id="sidebarDot"></span>
           <span id="sidebarStatusText" data-i18n="statusStopped">未运行</span>
         </div>
+        <!-- 常驻更新入口：发现新版本后一直显示（把更新弹窗关掉也不会消失），
+             点击直达「设置 → 检查更新」；已下载完成时点击直接开始安装 -->
+        <button class="sidebar-update" id="sidebarUpdateEntry" hidden>
+          <span class="sidebar-update-dot"></span>
+          <span class="sidebar-update-label" id="sidebarUpdateEntryLabel" data-i18n="sidebarUpdateNew">发现新版本</span>
+          <span class="sidebar-update-version" id="sidebarUpdateEntryVersion"></span>
+          <span class="sidebar-update-action" id="sidebarUpdateEntryAction" data-i18n="sidebarUpdateNow">立即更新</span>
+        </button>
         <div class="sidebar-actions">
           <button class="sidebar-action" id="sidebarLangBtn" title="切换语言 / Switch Language">
             <span class="sidebar-action-icon">
@@ -357,6 +365,36 @@
         </div>
 
         <div class="page-body settings-body">
+          <!-- 检查更新（刻意放在设置页最顶部：用户一进设置就能看到，
+               侧边栏常驻入口点击后也定位到这里） -->
+          <section class="panel">
+            <div class="panel-title" data-i18n="setUpdateTitle">检查更新</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div class="update-status" id="setUpdateStatus">正在检查更新...</div>
+                <div class="settings-desc" id="setUpdateHint"></div>
+              </div>
+              <button class="btn" id="setCheckBtn" data-i18n="setCheckNow">立即检查</button>
+            </div>
+
+            <div class="update-info" id="setUpdateInfo" hidden>
+              <!-- 注意：文案必须放在内层 span 上。applyI18n() 对 data-i18n 元素是 textContent 回填，
+                   若把 data-i18n 放在这一行上，会把装版本号的 <span id="setNewVersion"> 整个冲掉，
+                   导致切换语言后这行永远只剩「发现新版本 v」（没有版本号）。 -->
+              <div class="update-version"><span data-i18n="setFoundNew">发现新版本 v</span><span id="setNewVersion"></span></div>
+              <div class="update-notes" id="setNewNotes"></div>
+              <div class="update-actions">
+                <button class="btn btn-primary" id="setDownloadBtn">
+                  <span id="setDownloadBtnText" data-i18n="setDownloadBtn">下载并安装</span>
+                </button>
+              </div>
+              <div class="update-progress" id="setDownloadProgress" hidden>
+                <div class="update-bar"><div class="update-bar-fill" id="setDownloadFill"></div></div>
+                <div class="update-progress-text" id="setDownloadText">0%</div>
+              </div>
+            </div>
+          </section>
+
           <!-- 关于 -->
           <section class="panel">
             <div class="panel-title" data-i18n="setAbout">关于</div>
@@ -533,31 +571,6 @@
             </details>
           </section>
 
-          <!-- 检查更新 -->
-          <section class="panel">
-            <div class="panel-title" data-i18n="setUpdateTitle">检查更新</div>
-            <div class="settings-row">
-              <div class="settings-row-text">
-                <div class="update-status" id="setUpdateStatus">正在检查更新...</div>
-                <div class="settings-desc" id="setUpdateHint"></div>
-              </div>
-              <button class="btn" id="setCheckBtn" data-i18n="setCheckNow">立即检查</button>
-            </div>
-
-            <div class="update-info" id="setUpdateInfo" hidden>
-              <div class="update-version" data-i18n="setFoundNew">发现新版本 v<span id="setNewVersion"></span></div>
-              <div class="update-notes" id="setNewNotes"></div>
-              <div class="update-actions">
-                <button class="btn btn-primary" id="setDownloadBtn">
-                  <span id="setDownloadBtnText" data-i18n="setDownloadBtn">下载并安装</span>
-                </button>
-              </div>
-              <div class="update-progress" id="setDownloadProgress" hidden>
-                <div class="update-bar"><div class="update-bar-fill" id="setDownloadFill"></div></div>
-                <div class="update-progress-text" id="setDownloadText">0%</div>
-              </div>
-            </div>
-          </section>
         </div>
       </div>
     </main>

@@ -2,7 +2,9 @@
 
 > 从版本更新、提交、打包到发布 GitHub Release 的完整操作手册。适用于 `dsh-desktop`（DeepSeek Harness 桌面版）。
 >
-> **分工约定**：发布动作（更新版本/文档、提交、打标签、创建 GitHub Release 正文）由 **AI 助手**执行；**Windows 安装包由用户自行打包并上传**到 Release 资产区。
+> **分工约定**：发布动作（更新版本/文档、提交、打标签、创建 GitHub Release 正文、**打包 Windows 安装包并上传资产**、**发布到自建更新服务**）均由 **AI 助手**执行。
+>
+> 更新服务侧的发布已由 `publish-update-server.js` 一条命令完成（见第 6.3 节），无需再登录管理平台手工上传。
 
 ---
 
@@ -112,28 +114,56 @@ Authorization: token <PAT>
 
 ---
 
-## 6. 上传 Windows 安装包（用户）
+## 6. 打包 Windows 安装包并发布（AI）
 
-**用户操作**（AI 不执行此步）：
+> 说明：原约定「Windows 安装包由用户自行打包并上传」已调整为 AI 全流程执行：打包 → 上传 GitHub Release 资产 → 发布到自建更新服务（客户端「检查更新」读的就是后者）。若只需 GitHub 这一环，做完 6.2 即可。
 
-1. 在本地 `dsh-desktop` 目录打包：
-   ```bash
-   rmdir /s /q release
-   npm run dist        # 等价于 electron-builder --win
-   ```
-   > electron-builder 解压 winCodeSign 需创建符号链接，若报权限错误需以管理员运行（`pack.bat` 内置 UAC 提权逻辑）。
-2. 打开上一步创建的 Release 页面，在 **Assets → 点击齿轮图标 → Upload binaries**（或直接拖拽文件）上传：
-   ```
-   DeepSeek Harness 桌面版-Setup-X.Y.Z.exe   # NSIS 安装包
-   ```
-3. 也可用 API 上传（本机因代理证书问题，Node 请求需加 `--use-system-ca` 参数）：
-   ```
-   POST https://uploads.github.com/repos/<owner>/<repo>/releases/<release_id>/assets?name=<文件名>
-   Content-Type: application/octet-stream
-   Body: 安装包二进制
-   ```
+### 6.1 打包
 
-> **已知事项**：`latest.yml` 中的 `url` 为小写化文件名（如 `dsh-desktop-setup-1.7.0.exe`），与磁盘上的中文文件名不一致，属 electron-builder 行为，在线更新依赖更新服务端（`dsh-update-server`）的映射处理，与 GitHub Release 发布无关。
+```bash
+cd dsh-desktop
+rmdir /s /q release                      # PowerShell: Remove-Item -LiteralPath release -Recurse -Force
+npm run dist -- --publish never          # 等价 electron-builder --win；--publish never 避免它自己去动 Release
+```
+
+- electron-builder 解压 winCodeSign 需创建符号链接：若报权限错误，用管理员运行（`pack.bat` 内置 UAC 提权逻辑）。
+- **打包后必须自检**（历史踩坑）：确认 `release/win-unpacked/resources/app.asar` 内包含 `main.js` 引用的所有本地模块与窗口 preload。`package.json` 的 `build.files` 是**追加**过滤（不会裁剪未列出的文件，但新模块仍建议显式列出），新增 js 模块后务必核对一次，否则会出现"安装包启动即缺模块"。
+  ```bash
+  # 解析 asar 头部并核对关键文件（示例）
+  node -e "const fs=require('fs');const b=fs.readFileSync('release/win-unpacked/resources/app.asar');const n=b.readUInt32LE(12);const j=JSON.parse(b.toString('utf8',16,16+n));const out=[];(function w(x,p){for(const[k,v]of Object.entries(x.files||{})){const f=p?p+'/'+k:k;v.files?w(v,f):out.push(f)}})(j,'');console.log(out.length, out.filter(f=>/^(main|preload|plugin-|dsh-settings|resource-url-compat)/.test(f)))"
+  ```
+
+### 6.2 上传到 GitHub Release
+
+```bash
+node --use-system-ca gh-upload-asset.js <release_id>   # 自动挑选 release/ 下当前版本的安装包
+```
+
+（也可在 Release 页面 Assets → Upload binaries 手动上传 `DeepSeek Harness 桌面版-Setup-X.Y.Z.exe`。）
+
+> **已知事项**：`latest.yml` 中的 `url` 为小写化文件名（如 `dsh-desktop-setup-1.13.0.exe`），与磁盘上的中文文件名不一致，属 electron-builder 行为；GitHub 侧资产名同样会被规范化为 `DeepSeek.Harness.-Setup-X.Y.Z.exe`。
+
+### 6.3 发布到自建更新服务（客户端「检查更新」的数据源）
+
+```bash
+set DSH_PUBLISH_API_KEY=<服务端 .env 里的 PUBLISH_API_KEY>     # Linux/macOS: export ...
+node --use-system-ca publish-update-server.js
+```
+
+脚本会自动取 `package.json` 的版本号、`RELEASE_NOTES.md` 的正文作为更新日志、`release/` 下匹配该版本的安装包，调用 `POST /api/publish/versions` 发布，并在发布后调用 `/api/update/check` 验证客户端能否检测到新版本。
+
+常用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--dry-run` | 只打印将发送的字段，不发请求 |
+| `--mode upsert` / `create` | 默认 `upsert`（已存在则覆盖，可安全重跑）；`create` 遇重复报 409 |
+| `--allow-downgrade` | 允许发布低于当前生效最高版本的版本（回退发版） |
+| `--file <path>` | 显式指定安装包（默认在 `release/` 里按版本号匹配） |
+| `--api <url>` / `--key <key>` | 覆盖服务地址 / 密钥（默认读 `DSH_UPDATE_API` / `DSH_PUBLISH_API_KEY`） |
+| `--check-from <ver>` | 发布后用该版本号模拟客户端检查更新（默认 `0.0.0`） |
+
+> 首次使用需在服务端 `.env` 配置 `PUBLISH_API_KEY` 并重启服务，详见 `dsh-update-server/README.md` 的「自动化发布 API」章节；服务端还可用 `npm run test:publish-api` 在无 MySQL 的情况下自测接口。
 
 ---
 
@@ -185,28 +215,38 @@ GET https://api.github.com/repos/<owner>/<repo>/releases/tags/vX.Y.Z
 GET https://api.github.com/repos/<owner>/<repo>/actions/runs?event=push
 # 期望: Build macOS packages 结论 success
 
-# 3. 工作区干净
+# 3. 更新服务侧已能下发新版本（客户端「检查更新」的数据源）
+curl "https://api.deepseekharness.desktop.cwj666.top/api/update/check?appId=dsh-desktop&version=0.0.0&platform=win32&arch=x64"
+# 期望: hasUpdate=true，latestVersion 为本次发布版本
+
+# 4. 工作区干净
 git status          # 无未提交变更
 ```
 
 ---
 
-## 10. 快速清单（AI + 用户分工）
+## 10. 快速清单（全流程 AI 执行）
 
 ```bash
-# ===== AI 部分 =====
+# ===== 准备 =====
 # 1. 确认版本号一致 (package.json / CHANGELOG.md)，不一致则更新
 # 2. 更新 RELEASE_NOTES.md（+ README 中变化的说明）
-# 3. 提交: git add -A && git commit -m "feat: vX.Y.Z ..."
-# 4. 推送 main（代理失效加 -c 参数）
-# 5. 打标签并推送: git tag -a vX.Y.Z -m "..." && git push origin vX.Y.Z
-# 6. 创建 Release（正文）: node --use-system-ca gh-create-release.js
-# 7. 反馈 Release URL 给用户
 
-# ===== 用户部分 =====
-# 8. 本地打包: rmdir /s /q release && npm run dist
-# 9. 到 Release 页面手动上传: DeepSeek Harness 桌面版-Setup-X.Y.Z.exe
-# 10.（可选）从 Actions 下载 macOS artifact 上传
+# ===== GitHub =====
+# 3. 提交: git add -A && git commit -m "feat: vX.Y.Z ..."（中文提交信息建议用 -F <utf8 文件> 避免编码问题）
+# 4. 推送 main（代理/证书问题时加: -c http.proxy= -c https.proxy= -c http.sslVerify=false）
+# 5. 打标签并推送: git tag -a vX.Y.Z -F <utf8 文件> && git push origin vX.Y.Z   → 触发 macOS 云打包
+# 6. 创建 Release（正文取 RELEASE_NOTES.md）: node --use-system-ca gh-create-release.js
+# 7. 上传 Windows 安装包: node --use-system-ca gh-upload-asset.js <release_id>
+
+# ===== 自建更新服务（客户端「检查更新」的数据源）=====
+# 8. 打包安装包: rmdir /s /q release && npm run dist -- --publish never
+# 9. 一条命令发布: set DSH_PUBLISH_API_KEY=... && node --use-system-ca publish-update-server.js
+#    （脚本自动取版本号 / RELEASE_NOTES.md / release 下安装包，并在发布后校验更新检查）
+
+# ===== 收尾 =====
+# 10. macOS 产物（可选）：等 Actions 跑完后下载 dmg/zip 上传到同一 Release
+# 11. 反馈 Release URL + 更新服务发布结果给用户
 ```
 
 ---

@@ -162,6 +162,11 @@ const setDownloadBtnText = document.getElementById('setDownloadBtnText');
 const setDownloadProgress = document.getElementById('setDownloadProgress');
 const setDownloadFill = document.getElementById('setDownloadFill');
 const setDownloadText = document.getElementById('setDownloadText');
+// 侧栏常驻更新入口（发现新版本后一直可见，关闭更新弹窗也不消失）
+const sidebarUpdateEntry = document.getElementById('sidebarUpdateEntry');
+const sidebarUpdateEntryLabel = document.getElementById('sidebarUpdateEntryLabel');
+const sidebarUpdateEntryVersion = document.getElementById('sidebarUpdateEntryVersion');
+const sidebarUpdateEntryAction = document.getElementById('sidebarUpdateEntryAction');
 // 查看日志
 const setLogPath = document.getElementById('setLogPath');
 const setLogView = document.getElementById('setLogView');
@@ -2043,6 +2048,12 @@ const I18N = {
     setDownloadBtn: '下载并安装',
     umFoundNew: '发现新版本',
     umLater: '稍后再说',
+    // 侧栏常驻更新入口（关闭更新弹窗后仍可见）
+    sidebarUpdateNew: '发现新版本',
+    sidebarUpdateNow: '立即更新',
+    sidebarUpdateDownloading: '正在下载',
+    sidebarUpdateReady: '已下载完成',
+    sidebarUpdateInstall: '点击安装',
     umNotesLoading: '加载中...',
     // 动态文本（JS 中使用 t() 获取）
     stageInit: '正在初始化',
@@ -2210,6 +2221,12 @@ const I18N = {
     setDownloadBtn: 'Download & Install',
     umFoundNew: 'New Version Found',
     umLater: 'Later',
+    // Sidebar persistent update entry
+    sidebarUpdateNew: 'New version',
+    sidebarUpdateNow: 'Update now',
+    sidebarUpdateDownloading: 'Downloading',
+    sidebarUpdateReady: 'Ready to install',
+    sidebarUpdateInstall: 'Install',
     umNotesLoading: 'Loading...',
     // 动态文本
     stageInit: 'Initializing',
@@ -2971,6 +2988,69 @@ function renderUpdatePopup(state) {
   }
 }
 
+// ============ 侧栏常驻更新入口 ============
+// 发现新版本后，即使把更新弹窗关掉，侧栏底部这里也一直显示（不再只能去设置页最底部找）：
+//   available   → 「发现新版本 v1.14.0」+「立即更新」
+//   downloading → 「正在下载 42%」+「立即更新」
+//   downloaded  → 「已下载完成」+「点击安装」（点一下直接开始安装）
+// 点击入口：未下载 → 打开「设置」并滚动定位到「检查更新」；已下载 → 直接安装。
+let lastUpdateState = null;
+
+function setUpdateEntryText(el, key) {
+  if (!el) return;
+  // 同时更新 data-i18n，保证切换语言时 applyI18n 能回填成当前语言的文案
+  el.setAttribute('data-i18n', key);
+  el.textContent = t(key);
+}
+
+// 打开「设置」并滚动定位到「检查更新」面板（与日志区的跳转方式一致）
+function goToUpdateSection() {
+  openSettings();
+  setTimeout(() => {
+    const panel = setUpdateStatus && setUpdateStatus.closest('.panel');
+    // block:'start'：让「检查更新」面板顶到可视区最上方（它本身就是设置页第一个面板）
+    if (panel && panel.scrollIntoView) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 80);
+}
+
+function renderSidebarUpdateEntry(state) {
+  if (!sidebarUpdateEntry) return;
+  if (state) lastUpdateState = state;
+  const s = (lastUpdateState && lastUpdateState.status) || 'idle';
+  const latest = lastUpdateState && lastUpdateState.latest;
+  sidebarUpdateEntry.classList.toggle('steady', s === 'downloading' || s === 'downloaded');
+  if (s !== 'available' && s !== 'downloading' && s !== 'downloaded') {
+    sidebarUpdateEntry.hidden = true;
+    return;
+  }
+  sidebarUpdateEntry.hidden = false;
+  if (s === 'available') {
+    setUpdateEntryText(sidebarUpdateEntryLabel, 'sidebarUpdateNew');
+    sidebarUpdateEntryVersion.textContent = latest && latest.version ? 'v' + latest.version : '';
+    setUpdateEntryText(sidebarUpdateEntryAction, 'sidebarUpdateNow');
+  } else if (s === 'downloading') {
+    setUpdateEntryText(sidebarUpdateEntryLabel, 'sidebarUpdateDownloading');
+    sidebarUpdateEntryVersion.textContent = (lastUpdateState.percent || 0) + '%';
+    setUpdateEntryText(sidebarUpdateEntryAction, 'sidebarUpdateNow');
+  } else {
+    setUpdateEntryText(sidebarUpdateEntryLabel, 'sidebarUpdateReady');
+    sidebarUpdateEntryVersion.textContent = latest && latest.version ? 'v' + latest.version : '';
+    setUpdateEntryText(sidebarUpdateEntryAction, 'sidebarUpdateInstall');
+  }
+}
+
+if (sidebarUpdateEntry) {
+  sidebarUpdateEntry.addEventListener('click', () => {
+    if (!window.dsh) return;
+    // 已下载完成：点一下直接开始安装（入口文案此时是「点击安装」）
+    if (lastUpdateState && lastUpdateState.status === 'downloaded' && window.dsh.installUpdate) {
+      window.dsh.installUpdate();
+      return;
+    }
+    goToUpdateSection();
+  });
+}
+
 // ============ 初始化 ============
 if (!window.dsh) {
   setPercent(0);
@@ -3115,11 +3195,26 @@ if (!window.dsh) {
     }
   });
 
-  // 更新状态（设置页 + 更新弹窗同时响应）
+  // 更新状态（设置页 + 更新弹窗 + 侧栏常驻入口 同时响应）
   window.dsh.onUpdateStatus((status) => {
     renderUpdateStatus(status);
     renderUpdatePopup(status);
+    renderSidebarUpdateEntry(status);
   });
+
+  // 系统通知被点击：主进程已把窗口拉到前台，这里再打开更新入口
+  // （有新版本 → 直接重新弹出更新弹窗；其它情况 → 跳到「设置 → 检查更新」）
+  if (window.dsh.onUpdateFocus) {
+    window.dsh.onUpdateFocus(() => {
+      const s = lastUpdateState && lastUpdateState.status;
+      if (s === 'available' || s === 'downloading' || s === 'downloaded') {
+        showUpdatePopup();
+        renderUpdatePopup(lastUpdateState);
+      } else {
+        goToUpdateSection();
+      }
+    });
+  }
 
   // 运行状态增量更新（如 dsh 版本晚到）：刷新首页控制台，但不切换界面
   window.dsh.onServiceUpdate(({ service }) => {
