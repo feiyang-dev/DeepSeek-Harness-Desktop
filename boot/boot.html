@@ -479,20 +479,15 @@
             </div>
           </section>
 
-          <!-- 移动端远程控制 -->
+          <!-- 移动端访问（远程访问恒定开启，无开关） -->
           <section class="panel">
-            <div class="panel-title" data-i18n="setRemoteTitle">移动端远程控制</div>
+            <div class="panel-title" data-i18n="setRemoteTitle">移动端访问</div>
             <div class="settings-row">
               <div class="settings-row-text">
-                <div data-i18n="setRemoteToggleTitle">开启移动端远程控制</div>
-                <div class="settings-desc" data-i18n="setRemoteToggleDesc" data-i18n-html>开启后 dsh web 将以 <code>--host 0.0.0.0</code> 监听所有网卡。手机与电脑处于同一 Wi-Fi 时，扫码或在手机上打开下方地址，即可远程控制当前工作区。关闭后仅本机可访问。开关对下次启动生效。</div>
+                <div class="settings-desc" data-i18n="setRemoteDesc" data-i18n-html>远程访问默认开启，无需设置。服务每次启动都会自动绑定本机一块网卡的局域网 IPv4，手机与电脑处于同一 Wi-Fi 时，直接在手机上打开下方地址即可远程控制当前工作区；未检测到局域网 IPv4 时回退 127.0.0.1（仅本机可访问）。</div>
               </div>
-              <label class="settings-switch">
-                <input type="checkbox" id="setRemoteToggle" />
-                <span class="slider"></span>
-              </label>
             </div>
-            <div class="workspace-hint" id="setRemoteHint" hidden>
+            <div class="workspace-hint" id="setRemoteHint">
               <div id="setRemoteLanList"></div>
             </div>
           </section>

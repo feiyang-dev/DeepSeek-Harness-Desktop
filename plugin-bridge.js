@@ -18,6 +18,15 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const DEFAULT_HOST = '127.0.0.1';
+// 目标地址：dsh 0.2.1 起拒绝通配 host，桌面端改为绑定「某块网卡的局域网 IPv4」，
+// 此时 127.0.0.1 不再监听 —— 插件桥必须跟着用同一个地址，否则数据中心 / 余额 /
+// 备份 / 远程状态全部静默失败（available:false）。由 main.js 在确定绑定地址后调用
+// setHost() 同步过来；未调用时保持回环，兼容旧行为。
+let targetHost = DEFAULT_HOST;
+function setHost(next) {
+  const v = next && String(next).trim();
+  targetHost = v || DEFAULT_HOST;
+}
 const TIMEOUT_MS = 5000;
 // 余额查询可能触发插件的 node 子进程网络请求，单独放宽超时
 const BALANCE_TIMEOUT_MS = 15000;
@@ -31,7 +40,7 @@ function setAuthCookie(cookie) {
 }
 
 function httpJsonRequest(opts) {
-  const { host = DEFAULT_HOST, port, path: reqPath, method = 'GET', body, timeoutMs = TIMEOUT_MS } = opts || {};
+  const { host = targetHost, port, path: reqPath, method = 'GET', body, timeoutMs = TIMEOUT_MS } = opts || {};
   return new Promise((resolve) => {
     const payload = body === undefined ? null : JSON.stringify(body);
     const headers = payload
@@ -476,7 +485,7 @@ function createEventSubscription(port, cb) {
     let req;
     try {
       const headers = authCookie ? { Cookie: authCookie } : {};
-      req = http.request({ host: DEFAULT_HOST, port, path: endpoint, method: 'GET', headers, timeout: 0 }, (res) => {
+      req = http.request({ host: targetHost, port, path: endpoint, method: 'GET', headers, timeout: 0 }, (res) => {
         if (res.statusCode !== 200) {
           res.resume();
           schedule(endpoint, 5000);
@@ -523,6 +532,7 @@ function createEventSubscription(port, cb) {
 module.exports = {
   httpJsonRequest,
   setAuthCookie,
+  setHost,
   getDataCenterSnapshot,
   triggerBackup,
   getPluginSnapshots,

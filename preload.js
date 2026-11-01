@@ -49,6 +49,15 @@ contextBridge.exposeInMainWorld('dsh', {
     return () => ipcRenderer.removeListener('boot:status', listener);
   },
 
+  // ---- 端口占用询问（启动时端口被占用，由用户决定怎么处理） ----
+  onPortConflict: (cb) => {
+    const listener = (_e, info) => { if (typeof cb === 'function') cb(info); };
+    ipcRenderer.on('boot:port-conflict', listener);
+    return () => ipcRenderer.removeListener('boot:port-conflict', listener);
+  },
+  // action: 'kill'（结束占用进程并继续）| 'switch'（改用其它端口）| 'cancel'（取消启动）
+  decidePortConflict: (action) => ipcRenderer.invoke('boot:port-conflict-decision', action),
+
   // ---- 操作 ----
   retry: () => ipcRenderer.invoke('boot:retry'),
   quit: () => ipcRenderer.invoke('boot:quit'),
@@ -104,8 +113,6 @@ contextBridge.exposeInMainWorld('dsh', {
   },
   // 开发者选项模式开关（对下次启动生效）
   setDeveloperMode: (enabled) => ipcRenderer.invoke('settings:set-developer-mode', enabled),
-  // 移动端远程控制开关（开启后 dsh web 以 --host 0.0.0.0 启动，手机扫码/局域网可远程控制；对下次启动生效）
-  setRemoteControl: (enabled) => ipcRenderer.invoke('settings:set-remote-control', enabled),
   // 查看日志：读取最近日志内容（{ ok, content, file, logDir }）
   getLogs: () => ipcRenderer.invoke('settings:get-logs'),
   // 打开日志文件（系统默认文本编辑器）

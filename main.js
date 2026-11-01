@@ -198,10 +198,14 @@ function nextRegistry() {
 }
 
 let port = DEFAULT_PORT;
+// 服务监听地址 = 桌面端自身连接地址。远程访问恒定开启，不再提供开关：
+//   - 优先绑定本机某块网卡的具体局域网 IPv4（手机同一 Wi-Fi 可直接访问）
+//   - 没有任何局域网 IPv4 时回退 127.0.0.1（仅本机可访问）
+// dsh 0.2.1-rc.3 起官方拒绝通配地址：绑定 0.0.0.0 会把端口暴露到所有网卡，
+// 启动时直接以 schema 校验失败告终，只接受「某个具体网卡地址」字面量。
+// 代价是绑定局域网 IP 后 127.0.0.1 不再监听，因此桌面端自身的探活、主窗口、
+// 插件桥也必须用同一个地址（它们原本就读这个变量）。
 let host = '127.0.0.1';
-// 移动端远程控制：开启后 dsh web 以 --host 0.0.0.0 监听所有网卡（手机扫码 / 局域网访问）。
-// 仅影响服务监听地址；桌面端自身的健康检查、主窗口加载、日志展示始终用 127.0.0.1，不受影响。
-let remoteControl = false;
 
 // ------------------------------------------------------------
 //  新版 dsh（>=0.1.2-rc.1）Web UI 浏览器会话认证
@@ -212,14 +216,36 @@ let remoteControl = false;
 //  否则首页直接返回 401「dsh web authentication required」。
 //  因此桌面端必须从服务进程输出中捕获该 token URL，并用它加载主窗口。
 // ------------------------------------------------------------
+// 启动耗时统计（用于回答"为什么启动慢"）：记录服务进程创建时刻与各阶段耗时
+let serviceSpawnAt = 0;     // dsh 服务进程 spawn 时刻
+let bootStartedAt = 0;      // 本轮启动开始的时刻
+let serviceFirstOutputAt = 0; // dsh 进程首行输出时刻（用来区分"Node/依赖加载慢"与"插件装配慢"）
+let serviceListenAt = 0;      // dsh 打印 listening 的时刻（端口已可用）
+
+function noteServiceOutput(text) {
+  if (!serviceSpawnAt) return;
+  const s = String(text || '');
+  if (!serviceFirstOutputAt) {
+    serviceFirstOutputAt = Date.now();
+    logLine(`[计时] dsh 首次输出：进程启动后 ${((serviceFirstOutputAt - serviceSpawnAt) / 1000).toFixed(1)} 秒`
+      + '（这段是 Node 冷启动 + 模块加载）');
+  }
+  if (!serviceListenAt && /listening on|Local:|dsh web:/i.test(s)) {
+    serviceListenAt = Date.now();
+    logLine(`[计时] dsh 端口就绪：进程启动后 ${((serviceListenAt - serviceSpawnAt) / 1000).toFixed(1)} 秒`
+      + '（这段是插件 bundle 装配）');
+  }
+}
+
 let webAuthUrl = null;      // 本次服务进程打印的认证 URL（含 token），未捕获到为 null
 let webAuthBuffer = '';     // 跨 chunk 累积 stdout 文本，用于稳健匹配 URL 行
 let webAuthExchangeDone = false; // 是否已用该 token 换过一次浏览器会话 cookie（节流）
-const WEB_AUTH_URL_RE = /(?:^|\s)(https?:\/\/[^\s]*\/\?token=[A-Za-z0-9_-]+)/;
+// token 可能不是第一个查询参数（官方以 --public-url 挂载前缀时形如 /web/?a=1&token=x），
+// 因此不再要求「/?token=」紧邻；同时容忍 URL 末尾被引号/括号包裹的杂字符。
+const WEB_AUTH_URL_RE = /(https?:\/\/[^\s"'<>()\[\]]*[?&]token=[A-Za-z0-9_\-.]+)/;
 
-// 从服务输出片段中捕获「dsh web: http://127.0.0.1:3080/?token=...」认证 URL。
-// 注意：dsh 打印的 LAN URL 也在同一行（LAN: http://192.168.x.x/?token=...），
-// 第一个 http URL 一定是本机 127.0.0.1，直接取首个匹配即可。
+// 从服务输出片段中捕获「dsh web: http://<bindHost>:<port>/?token=...」认证 URL。
+// 服务只监听一块具体网卡（局域网 IP 或回环），打印的第一个 URL 就是它，取首个匹配即可。
 function captureWebAuthUrl(text) {
   if (webAuthUrl) return webAuthUrl;
   if (!text) return null;
@@ -228,6 +254,10 @@ function captureWebAuthUrl(text) {
   if (m && m[1]) {
     webAuthUrl = m[1];
     logLine(`[认证] 已捕获 dsh web 访问令牌，将用带 token 的 URL 打开主界面`);
+    if (serviceSpawnAt) {
+      const sec = (Date.now() - serviceSpawnAt) / 1000;
+      logLine(`[计时] dsh 进程启动 → 打印访问令牌：${sec.toFixed(1)} 秒（这段是插件装配，桌面端无法干预）`);
+    }
     exchangeBrowserSessionCookie(webAuthUrl); // 顺手为主进程插件桥换一次 cookie
   }
   return webAuthUrl || null;
@@ -235,9 +265,9 @@ function captureWebAuthUrl(text) {
 
 // 用 token URL 向 dsh web 换一次浏览器会话 cookie，供主进程插件桥（/api 前缀）使用。
 // Node http.get 默认不跟随 303，能直接读到 Set-Cookie 响应头。
-function exchangeBrowserSessionCookie(tokenUrl) {
+function exchangeBrowserSessionCookie(tokenUrl, attempt) {
+  const round = attempt || 1;
   if (!tokenUrl || webAuthExchangeDone) return;
-  webAuthExchangeDone = true;
   try {
     const u = new URL(tokenUrl);
     const req = http.get({
@@ -251,14 +281,32 @@ function exchangeBrowserSessionCookie(tokenUrl) {
       res.resume();
       const cookie = (Array.isArray(sc) ? sc[0] : sc) || '';
       const kv = String(cookie).split(';')[0].trim();
-      if (kv) {
+      // 官方契约（packages/client/connection/browser-auth.ts）：GET /?token=xxx → 303 + Set-Cookie。
+      // 断言过状态码再认 cookie，出问题能立刻在日志里看出来，而不是"静默 401"。
+      if (kv && res.statusCode >= 300 && res.statusCode < 400) {
+        webAuthExchangeDone = true;
         pluginBridge.setAuthCookie(kv);
         logLine('[认证] 已就绪浏览器会话 cookie（插件数据桥可用）');
+        return;
       }
+      if (kv) {
+        // 老版本 / 会话已存在时直接 200 + Set-Cookie，同样可用
+        webAuthExchangeDone = true;
+        pluginBridge.setAuthCookie(kv);
+        logLine(`[认证] 已就绪浏览器会话 cookie（HTTP ${res.statusCode}，插件数据桥可用）`);
+        return;
+      }
+      logLine(`[认证] token 换取会话 cookie 未成功（HTTP ${res.statusCode}，第 ${round} 次尝试）`);
+      if (round < 3) setTimeout(() => exchangeBrowserSessionCookie(tokenUrl, round + 1), 600);
     });
     req.on('timeout', () => req.destroy());
-    req.on('error', () => { /* 服务刚就绪偶发未监听，静默；下次捕获不会重试也无妨 */ });
-  } catch (e) { /* ignore */ }
+    req.on('error', () => {
+      // 服务刚就绪偶发未监听：短退避重试，3 次仍失败就放弃（不影响主界面加载）
+      if (round < 3) setTimeout(() => exchangeBrowserSessionCookie(tokenUrl, round + 1), 600);
+    });
+  } catch (e) {
+    logLine('[认证] token URL 解析失败：' + e.message);
+  }
 }
 
 // 探测 dsh web 首页对「裸地址（无 cookie / 无 token）」的响应码。
@@ -293,35 +341,60 @@ async function resolveMainUiUrl(checkPort, waitMs) {
   return webAuthUrl || `http://${host}:${checkPort}`;
 }
 
-// 获取本机局域网 IPv4 地址列表（供「移动端远程控制」设置页展示手机访问链接）
-function getLanIPv4Addresses() {
+// 收集本机所有非回环 IPv4（带网卡名），用于挑选监听地址。
+function listLanIPv4() {
   const out = [];
   try {
     const ifaces = os.networkInterfaces();
-    for (const list of Object.values(ifaces)) {
+    for (const [name, list] of Object.entries(ifaces || {})) {
       for (const it of list || []) {
-        if (it && it.family === 'IPv4' && !it.internal) out.push(it.address);
+        if (!it || it.family !== 'IPv4' || it.internal) continue;
+        const address = String(it.address || '');
+        if (!address || address.startsWith('169.254.')) continue; // APIPA：没有真实网络
+        out.push({ name, address });
       }
     }
   } catch (e) { /* ignore */ }
   return out;
 }
 
-// ── 移动端远程控制的实现方式 ─────────────────────────────────────────────
-// dsh 官方 CLI（dsh-web-app/startup.js）出于安全硬编码拒绝 `--host 0.0.0.0`
-// （防止远程代码执行暴露到局域网）。因此不能通过命令行参数实现。
-// 但 profile 配置层（dsh-host-webserver schema、dsh-web-app 的 ALL_INTERFACES_HOST /
-// resolveLanTrust）完整支持 0.0.0.0。做法是：CLI 仍传 `--host 127.0.0.1`
-// （桌面端自身的健康检查、主窗口加载、日志展示全部不受影响），同时给 dsh web
-// 传一个 `--patch <overlay>`，把 webserver 行的 config.host 覆盖为 0.0.0.0。
-// 这样 dsh-remote-web-ui 插件读到 webServer.host === "0.0.0.0"，就会生成局域网
-// 配对二维码 / 手机访问链接。
+// 虚拟网卡不参与「手机同 Wi-Fi 直连」的监听地址选择（它们不对应真实局域网）。
+const VIRTUAL_IFACE_RE = /vEthernet|VirtualBox|VMware|Hyper-V|WSL|Docker|Loopback|Npcap|Bluetooth|Tailscale|ZeroTier/i;
+
+// 挑选要绑定的局域网 IPv4：私有网段优先（192.168 > 10 > 172.16-31），
+// 跳过虚拟网卡；一个可用地址都没有时返回 null（调用方回退 127.0.0.1）。
+function pickLanIPv4() {
+  const score = ({ name, address }) => {
+    if (VIRTUAL_IFACE_RE.test(name)) return -1;
+    if (/^192\.168\./.test(address)) return 3;
+    if (/^10\./.test(address)) return 2;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(address)) return 1;
+    return 0; // 其余公网 / CGNAT 地址仍可绑定，但排在私有网段之后
+  };
+  let best = null;
+  for (const it of listLanIPv4()) {
+    const s = score(it);
+    if (s < 0) continue;
+    if (!best || s > best.score) best = { name: it.name, address: it.address, score: s };
+  }
+  return best ? best.address : null;
+}
+
+// ── 移动端访问（恒定开启，无开关）──────────────────────────────────────────
+// dsh 0.2.1-rc.3 起 `dsh-host-webserver` 拒绝通配地址：`host: '0.0.0.0'` 会在
+// schema 校验阶段直接抛错（"binding every interface would expose remote code
+// execution to the network"），进程以 code=1 退出，webServer 及其下游 8 个插件
+// 全部无法激活。因此改为绑定「一块具体网卡的局域网 IPv4」，不再绑通配地址。
 //
-// overlay 文件内容（YAML patch 列表，按 id 覆盖 bundle 层 webserver 行）：
-//   - id: webserver
-//     config:
-//       host: '0.0.0.0'
-//       port: !!js ctx.webStartup.port ?? <默认端口>
+// 为什么仍然要 --patch overlay：profile 的 cordis.patch.yml 由插件维护，里面
+// 可能写着 `host: '127.0.0.1'`；profile patch 在 bundle 之后应用，会盖掉 CLI
+// 的 --host。overlay 是最后一层，用它把 host 钉死成选定的具体地址。
+//
+// 该地址不必写进 connection.trustedHosts：官方 /api 信任围栏对「监听绑定地址
+// 字面量」自动放行（api-request-trust.ts 的 isBindAddressAuthority），手机直连
+// 与桌面端自身访问都不会 403。
+let remoteOverlayFile = null; // 本次注入的 overlay 路径；未注入为 null
+
 function remoteOverlayPath() {
   try {
     return path.join(app.getPath('userData'), 'remote-control.patch.yml');
@@ -330,34 +403,7 @@ function remoteOverlayPath() {
   }
 }
 
-// 按当前 remoteControl 开关状态生成/删除 overlay 文件。启动各模式前调用一次即可。
-function syncRemoteOverlay() {
-  const file = remoteOverlayPath();
-  try {
-    if (!remoteControl) {
-      if (fs.existsSync(file)) fs.unlinkSync(file);
-      return;
-    }
-    const content = [
-      '# Auto-generated by dsh-desktop (mobile remote control). Do not edit.',
-      '- id: webserver',
-      '  config:',
-      "    host: '0.0.0.0'",
-      '    port: !!js ctx.webStartup.port ?? ' + String(port),
-    ].join('\n') + '\n';
-    fs.writeFileSync(file, content, 'utf8');
-    // 写完立即自检：0.1.7 起非法 patch 会影响服务启动，宁可提前发现
-    const v = validateRemoteOverlay(file);
-    if (!v.ok) logLine(`[警告] 生成的远程控制 overlay 未通过校验：${v.reason}`);
-  } catch (e) {
-    logLine(`[警告] 写入移动端远程控制 overlay 失败：${e.message}`);
-  }
-}
-
-// 校验 overlay patch 的结构（官方 0.1.7 语义收紧，overlay 是我们的"插入点"）：
-//   - 空文件 / 仅含注释的 patch 会让 profile 启动失败 → 必须拒绝；
-//   - patch 指向的条目不存在时官方只打 stderr 警告（远程控制会静默失效）→ 提前检出；
-//   - --patch 是 launcher 自身参数，必须紧跟 web（调用方已保证顺序）。
+// overlay 结构校验：空 patch 会被官方拒绝启动；host 必须是具体地址（不能是通配）。
 function validateRemoteOverlay(file) {
   try {
     const text = fs.readFileSync(file, 'utf8');
@@ -367,8 +413,10 @@ function validateRemoteOverlay(file) {
     if (!/^\s*-\s*id\s*:\s*['"]?webserver['"]?\s*$/m.test(text)) {
       return { ok: false, reason: '缺少 `- id: webserver` 覆盖条目' };
     }
-    if (!/\bhost\s*:/.test(text)) {
-      return { ok: false, reason: '缺少 host 覆盖（无法切到 0.0.0.0）' };
+    const m = /^\s*host\s*:\s*['"]?([^'"\s]+)['"]?\s*$/m.exec(text);
+    if (!m) return { ok: false, reason: '缺少 host 覆盖' };
+    if (['0.0.0.0', '::', '0:0:0:0:0:0:0:0'].includes(m[1])) {
+      return { ok: false, reason: `host ${m[1]} 是通配地址（0.2.1 起会被拒绝）` };
     }
     return { ok: true };
   } catch (e) {
@@ -376,17 +424,55 @@ function validateRemoteOverlay(file) {
   }
 }
 
-// 拼接启动参数中远程控制相关的片段：开启时传 --patch overlay，关闭时不传。
-// 校验不通过时宁可不注入：服务照常启动，只失去局域网暴露能力，并在日志说明原因。
-function remoteControlArgs() {
-  if (!remoteControl) return [];
+// 写入 / 删除 overlay。bindHost 为空表示本次不注入（交给 profile 决定，即回环）。
+function syncRemoteOverlay(bindHost) {
   const file = remoteOverlayPath();
-  const v = validateRemoteOverlay(file);
-  if (!v.ok) {
-    logLine(`[警告] 移动端远程控制 overlay 校验未通过：${v.reason}；本次启动不注入该 overlay（服务仍会正常启动，但手机将无法访问）`);
-    return [];
+  if (!bindHost) {
+    try { if (fs.existsSync(file)) fs.unlinkSync(file); } catch (e) { /* ignore */ }
+    return null;
   }
-  return ['--patch', file];
+  try {
+    const content = [
+      '# Auto-generated by dsh-desktop (mobile access). Do not edit.',
+      '- id: webserver',
+      '  config:',
+      `    host: '${bindHost}'`,
+      '    port: !!js ctx.webStartup.port ?? ' + String(port),
+    ].join('\n') + '\n';
+    fs.writeFileSync(file, content, 'utf8');
+    const v = validateRemoteOverlay(file);
+    if (!v.ok) {
+      logLine(`[警告] 移动端访问 overlay 校验未通过：${v.reason}；本次不注入（服务仍会启动，但手机无法访问）`);
+      return null;
+    }
+    return file;
+  } catch (e) {
+    logLine(`[警告] 写入移动端访问 overlay 失败：${e.message}`);
+    return null;
+  }
+}
+
+// 启动服务前确定监听地址（幂等）：有局域网 IPv4 就绑它，否则回退回环。
+// 桌面端自身的探活 / 主窗口 / 插件桥都用同一个 host。
+function applyRemoteBinding() {
+  const lan = pickLanIPv4();
+  host = lan || '127.0.0.1';
+  remoteOverlayFile = syncRemoteOverlay(lan);
+  // 插件数据桥必须跟着用同一个地址：绑定局域网 IP 后 127.0.0.1 不再监听，
+  // 不切换会让数据中心 / 余额 / 备份 / 远程状态全部静默 401/ECONNREFUSED。
+  try { pluginBridge.setHost(host); } catch (e) { /* ignore */ }
+  if (lan) {
+    logLine(`[服务] 监听地址：${lan}:${port}（手机与电脑同一 Wi-Fi 时可直接访问）`);
+  } else {
+    logLine('[服务] 未检测到局域网 IPv4 地址，本次仅本机可访问（127.0.0.1）');
+  }
+  return host;
+}
+
+// 启动参数中的 overlay 片段：--patch 是 launcher 自身参数，必须紧跟 web、
+// 放在 --no-open/--host/--port 之前。
+function remoteControlArgs() {
+  return remoteOverlayFile ? ['--patch', remoteOverlayFile] : [];
 }
 
 let bootWindow = null;   // 首页引导窗口（常驻：模式选择 / 运行状态控制台 / 插件管理 / 设置）
@@ -428,8 +514,7 @@ const serviceState = {
   devWebPid: null,     // 浏览器端热更 watcher 进程 PID
   dshVersion: null,    // 最近一次 npx 快速启动实际运行的 dsh 版本
   localUpdate: null,   // 离线启动模式检测到官方新版：{ latest, next, current }，无则 null
-  remoteControl: false, // 移动端远程控制是否开启（服务监听 0.0.0.0）
-  lanAddresses: [],    // 局域网 IPv4 地址列表（开启远程控制时手机访问用）
+  lanAddresses: [],    // 当前绑定的局域网 IPv4（手机访问用；绑定回环时为空）
 };
 
 // ============================================================
@@ -486,6 +571,16 @@ const MODE_STEPS = {
     { p: 80, title: '启动本地 dsh 服务' },
     { p: 96, title: '启动服务' },
   ],
+  // 极速启动特有路径：本地环境**已就绪**（绝大多数二次启动都走这条）。
+  // 以前复用上面的 local 表，于是明明只是在启动进程，进度页却显示
+  // 「步骤 3/5 安装本地运行环境」——与实际动作完全不符。这里单独给一张表，
+  // 步骤名对齐真实动作：检测 → 校验本地环境 → 启动进程 → 装配插件等就绪。
+  localReady: [
+    { p: 0, title: '检测运行环境' },
+    { p: 40, title: '校验本地运行环境' },
+    { p: 62, title: '启动本地 dsh 服务' },
+    { p: 72, title: '装配插件并等待就绪' },
+  ],
 };
 
 let currentSteps = null; // 当前模式的步骤表
@@ -499,6 +594,101 @@ function resolveStep(percent) {
     if (percent >= currentSteps[i].p) idx = i;
   }
   return { index: idx + 1, total: currentSteps.length, title: currentSteps[idx].title };
+}
+
+// 启动等待阶段的实时文案（text / detail / hint 三行各自说明不同层面的信息）。
+// 设计原则：文案必须跟着「进程真实走到哪一步」+「已经等了多久」变化，
+// 不同模式、首次安装、杀软扫描、插件过多、网络慢等情况都有对应说法，
+// 不再长期停在同一句「正在加载 dsh 运行环境与插件」。
+function describeStartPhase(elapsed, ctx) {
+  const mode = (ctx && ctx.mode) || '';
+  const after = (t) => ((t - serviceSpawnAt) / 1000).toFixed(1);
+
+  // ① 服务进程还没创建：各模式在做什么差别很大
+  if (!serviceSpawnAt) {
+    if (ctx && ctx.dev) {
+      return {
+        text: `正在准备开发者模式，已等待 ${elapsed} 秒...`,
+        detail: '将分别启动「服务端后端」与「浏览器端热更 watcher」，两者相互独立',
+        hint: '首次启动 watcher 需要完成全部客户端插件的初始构建，会比平时久',
+      };
+    }
+    const prep = mode === 'source'
+      ? '正在检查源码仓库、依赖与构建产物（pnpm install / build 的实时输出见下方日志）'
+      : mode === 'quick'
+        ? '正在通过 pnpm 解析官方 dsh 包（首次启动需要联网下载依赖，之后走本地缓存）'
+        : mode === 'repair'
+          ? '正在备份 ~/.dsh 并清理损坏的插件引用（聊天记录、工作区与设置都会保留）'
+          : '正在校验本地 dsh 包入口、组装启动参数并准备注入配置';
+    return {
+      text: `正在准备启动环境，已等待 ${elapsed} 秒...`,
+      detail: prep,
+      hint: '这段不联网，通常 1~3 秒完成',
+    };
+  }
+
+  // ② 进程已创建但还没有第一行输出：Node 冷启动 + 模块加载（最吃磁盘的一段）
+  if (!serviceFirstOutputAt) {
+    const spawnSec = (Date.now() - serviceSpawnAt) / 1000;
+    if (spawnSec < 8) {
+      return {
+        text: `正在加载 dsh 运行环境，已等待 ${elapsed} 秒...`,
+        detail: 'Node 正在冷启动并加载 dsh 模块，这段时间磁盘与 CPU 最忙',
+        hint: '首次启动、系统更新后第一次启动会更慢，属正常现象',
+      };
+    }
+    if (spawnSec < 20) {
+      return {
+        text: `正在加载 dsh 运行环境，已等待 ${elapsed} 秒...`,
+        detail: `已等待 ${spawnSec.toFixed(0)} 秒仍无输出 —— 首次启动或杀毒软件的实时扫描都会明显拉长这段`,
+        hint: '把本应用和 dsh 所在目录加入杀毒软件白名单，通常能省下几秒',
+      };
+    }
+    if (spawnSec < 45) {
+      return {
+        text: `正在加载 dsh 运行环境，已等待 ${elapsed} 秒...`,
+        detail: `模块加载偏慢（进程启动后 ${spawnSec.toFixed(0)} 秒仍无输出），可能在扫描或解压依赖，也可能被安全软件卡在读取阶段`,
+        hint: '可在任务管理器观察 node.exe 的磁盘占用；若长时间不动，请展开下方日志查看最后一行',
+      };
+    }
+    return {
+      text: `正在加载 dsh 运行环境，已等待 ${elapsed} 秒...`,
+      detail: `已经 ${spawnSec.toFixed(0)} 秒没有收到 dsh 的任何输出，启动可能已被阻塞`,
+      hint: '常见原因：安全软件拦截、上一轮残留的 node 进程占着文件、磁盘满载。可点「取消」后重新运行',
+    };
+  }
+
+  // ③ 已有输出但端口还没监听：模块与插件初始化
+  if (!serviceListenAt) {
+    return {
+      text: `dsh 已开始启动，正在初始化插件，已等待 ${elapsed} 秒...`,
+      detail: `首行输出出现在进程启动后 ${after(serviceFirstOutputAt)} 秒，现在正在初始化插件与服务配置`,
+      hint: '插件数量越多这段越久；具体在做哪一步可看下方日志',
+    };
+  }
+
+  // ④ 端口已监听但还没打印访问令牌：插件 bundle 装配（通常是最长的一段）
+  if (!webAuthUrl) {
+    const listenSec = (Date.now() - serviceListenAt) / 1000;
+    let hint = '这一步由 dsh 自己完成，桌面端无法加速';
+    if (listenSec > 30) {
+      hint = '装配偏久：可在「插件管理」里停用不常用的插件，下次启动会明显更快';
+    } else if (listenSec > 10) {
+      hint = '插件越多，装配越久；这一步由 dsh 自己完成，桌面端无法加速';
+    }
+    return {
+      text: `正在装配插件并等待访问令牌，已等待 ${elapsed} 秒...`,
+      detail: `端口已监听（进程启动后 ${after(serviceListenAt)} 秒），正在装配插件 bundle —— dsh 打印访问令牌后主界面才能打开`,
+      hint,
+    };
+  }
+
+  // ⑤ 令牌已到手，只差打开窗口
+  return {
+    text: `正在打开主界面，已等待 ${elapsed} 秒...`,
+    detail: '已捕获访问令牌，正在用带令牌的地址打开主界面窗口',
+    hint: '窗口通常在 1~3 秒内出现，若未出现请查看下方日志',
+  };
 }
 
 function setProgress(percent, stage, text, detail, hint) {
@@ -585,7 +775,19 @@ function startInstallTicker() {
     if (installStats.downloaded > 0) stats.push(`已下载 ${installStats.downloaded} 个依赖包`);
     if (installStats.extracted > 0) stats.push(`已解压 ${installStats.extracted} 个${installStats.lastPkg ? `（最近：${installStats.lastPkg}）` : ''}`);
     const stageName = firstInstallShown ? '正在下载并安装运行环境' : '正在更新运行环境';
-    const hint = `${stageName}，已 ${elapsed}${stats.length ? '，' + stats.join('，') : ''}，请耐心等待（可展开命令行日志查看每个包的下载/解压过程）`;
+    const elapsedSec = installStageStartedAt ? Math.floor((Date.now() - installStageStartedAt) / 1000) : 0;
+    // 按安装的真实进度给出不同提示，而不是每 2 秒都重复同一句「请耐心等待」
+    let tail;
+    if (elapsedSec > 20 && installStats.downloaded === 0) {
+      tail = '暂无下载进度：可能在解析依赖树，或网络/镜像较慢（失败会自动切换镜像重试）';
+    } else if (installStats.total > 0 && installStats.downloaded >= installStats.total && installStats.extracted < installStats.total) {
+      tail = '依赖已下载完，正在解压写入磁盘（这一步主要吃磁盘，网络已不再是瓶颈）';
+    } else if (installStats.extracted > 0) {
+      tail = '正在边下载边解压，可展开命令行日志查看每个包的处理过程';
+    } else {
+      tail = '首次安装需要下载数百 MB 依赖，请耐心等待（可展开命令行日志观察进度）';
+    }
+    const hint = `${stageName}，已 ${elapsed}${stats.length ? '，' + stats.join('，') : ''}，${tail}`;
     broadcast('boot:progress', {
       percent: Math.round(next),
       stage: 'install',
@@ -745,13 +947,188 @@ function logLine(line) {
   diagnoseOfficialLine(text);
 }
 
+// ============================================================
+//  错误诊断日志自动上报（后端 /api/report/error）
+//  目的：用户机器上一旦启动/安装失败，当天日志自动上传到更新服务，
+//  开发者无需再向用户索要日志文件即可远程定位（用户零操作）。
+//  只在正式安装包生效；开发态（未打包）默认不发，DSH_REPORT_UPLOAD=1 可强制联调。
+// ============================================================
+const reportedSignatures = new Set(); // 同一次运行内同一错误只上报一次（防刷屏/防刷服务器）
+
+// 读取当天日志文件尾部（默认最多 200KB，避免请求体过大被网关拦截）
+function collectDiagnosticLog(maxChars) {
+  const limit = maxChars || 200 * 1024;
+  try {
+    const file = currentLogFilePath();
+    if (!fs.existsSync(file)) return '';
+    const text = fs.readFileSync(file, 'utf8');
+    if (text.length <= limit) return text;
+    return '...(日志过长，仅保留末尾内容)\n' + text.slice(-limit);
+  } catch (e) {
+    return '';
+  }
+}
+
+// POST JSON（与 httpJsonRequest 同源策略：证书校验失败时降级重试一次）
+function postJsonRequest(urlStr, payload, timeoutMs, insecure) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(urlStr); } catch (e) { return reject(new Error('上报地址无效')); }
+    const body = Buffer.from(JSON.stringify(payload), 'utf8');
+    const mod = u.protocol === 'http:' ? http : https;
+    const req = mod.request({
+      protocol: u.protocol,
+      hostname: u.hostname,
+      port: u.port || undefined,
+      path: u.pathname + u.search,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': body.length,
+        'User-Agent': `dsh-desktop/${appVersion()}`,
+      },
+      timeout: timeoutMs || 20000,
+      rejectUnauthorized: !insecure,
+    }, (res) => {
+      let text = '';
+      res.on('data', (c) => { text += c; });
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(text));
+        } catch (e) {
+          reject(new Error(`服务器返回格式错误（HTTP ${res.statusCode}）`));
+        }
+      });
+    });
+    req.on('timeout', () => { req.destroy(); reject(new Error('上报请求超时')); });
+    req.on('error', (e) => {
+      if (!insecure && /certificate|CERT_|UNABLE_TO_VERIFY|SELF_SIGNED|SSL/i.test(e.message)) {
+        return resolve(postJsonRequest(urlStr, payload, timeoutMs, true));
+      }
+      reject(new Error('网络错误：' + e.message));
+    });
+    req.write(body);
+    req.end();
+  });
+}
+
+// 上报一次错误（含当次运行日志尾部）；返回上报编号或 null（静默失败，绝不影响主流程）
+async function uploadErrorReport(info) {
+  const opts = info || {};
+  if (!app.isPackaged && process.env.DSH_REPORT_UPLOAD !== '1') return null;
+  const message = String(opts.message || '').slice(0, 2000);
+  const code = String(opts.code || 'boot-error');
+  const signature = `${code}|${message}`;
+  if (reportedSignatures.has(signature)) return null;
+
+  const payload = {
+    appId: UPDATE_APP_ID,
+    version: appVersion(),
+    platform: process.platform,
+    arch: process.arch,
+    deviceId: getDeviceId(),
+    code,
+    phase: bootPhase,
+    message,
+    logs: collectDiagnosticLog(),
+    meta: {
+      mode: selectedMode || null,
+      port,
+      // 官方启动诊断文件路径（dsh 0.2.x 会写 $DSH_HOME/logs/startup-*.log）
+      officialDiagnosticsPath: opts.officialDiagnosticsPath || null,
+      crashCode: opts.crashCode != null ? Number(opts.crashCode) : null,
+      electron: process.versions.electron,
+      node: process.versions.node,
+      os: `${os.type()} ${os.release()}`,
+      uptimeSec: Math.round(process.uptime()),
+    },
+  };
+
+  try {
+    const data = await postJsonRequest(`${UPDATE_API_BASE}/api/report/error`, payload, 25000);
+    const id = data && data.success && data.data ? data.data.id : null;
+    if (id != null) {
+      // 只在真正上报成功后才记下去重标记：网络失败时下次同样错误还能再试
+      reportedSignatures.add(signature);
+      logLine(`[上报] 错误诊断日志已自动上传（编号 #${id}），开发者可远程追踪本次问题`);
+      return id;
+    }
+    logLine('[上报] 诊断日志未被服务端受理：' + ((data && data.message) || '未知原因'));
+  } catch (e) {
+    logLine('[上报] 诊断日志上传失败（不影响使用）：' + e.message);
+  }
+  return null;
+}
+
+// ============================================================
+//  官方启动诊断文件（dsh 0.2.x）
+//  官方 CLI 启动失败时会把完整诊断（错误对象 inspect、插件元数据、Node/平台信息）
+//  落到 $DSH_HOME/logs/startup-<时间>-<uuid>.log，并在 stderr 打印 "Full diagnostics: <路径>"。
+//  这比我们靠正则猜 stdout 文案准得多，因此失败时优先把它读进来（也随上报一起发走）。
+// ============================================================
+function officialStartupDiagnosticsDir() {
+  try {
+    return path.join(dshSettings.dshHomeDir(), 'logs');
+  } catch (e) {
+    return path.join(os.homedir(), '.dsh', 'logs');
+  }
+}
+
+function collectOfficialStartupDiagnostics(windowMs) {
+  const dir = officialStartupDiagnosticsDir();
+  const since = Date.now() - (windowMs || 10 * 60 * 1000);
+  let best = null;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      if (!/^startup-.*\.log$/i.test(name)) continue;
+      const p = path.join(dir, name);
+      let st;
+      try { st = fs.statSync(p); } catch (e) { continue; }
+      if (!st.isFile() || st.mtimeMs < since) continue;
+      if (!best || st.mtimeMs > best.mtimeMs) best = { path: p, mtimeMs: st.mtimeMs, size: st.size };
+    }
+  } catch (e) {
+    return null; // 目录不存在：老版本 dsh 不会写这个文件
+  }
+  if (!best) return null;
+  let text = '';
+  try {
+    text = fs.readFileSync(best.path, 'utf8');
+  } catch (e) {
+    return { path: best.path, text: '' };
+  }
+  return { path: best.path, text: text.slice(-48 * 1024) };
+}
+
 // 启动失败：透传可选的崩溃码，前端据此展示针对性修复建议
-function bootError(message, crashCode) {
+// reportCode：上报到服务端时使用的错误分类（便于后台按类型聚合）
+function bootError(message, crashCode, reportCode) {
   bootPhase = 'error';
   stopInstallTicker();
   logLine(`[错误] ${message}`);
+
+  // 附上官方自己的启动诊断（若有）：直接照抄比字符串猜测可靠，也让上报更有价值
+  let officialPath = null;
+  try {
+    const official = collectOfficialStartupDiagnostics();
+    if (official) {
+      officialPath = official.path;
+      logLine(`[诊断] 官方启动诊断文件：${official.path}`);
+      const lines = String(official.text || '').split(/\r?\n/).filter((l) => l.trim()).slice(0, 60);
+      for (const l of lines) logLine('[诊断] ' + l.slice(0, 500));
+      if (!lines.length) logLine('[诊断] （诊断文件为空，可能是权限或写入失败）');
+    }
+  } catch (e) { /* 诊断读取失败不影响错误展示 */ }
+
   broadcast('boot:status', { phase: 'error', message, crashCode: crashCode != null ? Number(crashCode) : null });
   refreshTrayMenu();
+  // 自动上报诊断日志（异步、静默：失败只写一行日志，不阻塞也不打断用户操作）
+  uploadErrorReport({
+    code: reportCode || 'boot-error',
+    message,
+    crashCode,
+    officialDiagnosticsPath: officialPath,
+  }).catch(() => {});
 }
 
 // ============================================================
@@ -774,7 +1151,10 @@ function isPortOpen(checkPort) {
 // 因此以「已捕获 token URL」或「根路径直接 2xx（老版 dsh / 已有会话 cookie）」为准；
 // 同时保留兜底宽限：端口开放后最多再等 UI_READY_GRACE_MS，超时则退回"端口就绪"，
 // 避免将来 dsh 改了输出格式导致永远等不到 token 而卡死（宁可早一点、也不卡住）。
-const UI_READY_GRACE_MS = 25000;
+// 兜底宽限从 25 秒提高到 120 秒：25 秒在插件多的机器上会「假就绪」——面板打日志说
+// 「服务已就绪」，其实 dsh 还没打印 token，主窗口只能在内部再等好几秒。
+// 现在宁可多等一会儿也要等到真正的 token（或 2xx），日志与用户感知才一致。
+const UI_READY_GRACE_MS = 120000;
 let webListeningSince = 0; // 端口有响应但界面尚未就绪的起始时刻（0 = 不在该窗口内）
 async function isUiReady(checkPort) {
   if (webAuthUrl) { webListeningSince = 0; return true; }
@@ -828,6 +1208,35 @@ function which(cmd) {
   });
 }
 
+// 从注册表读取官方 Node.js 安装目录（InstallPath）。
+// 为什么需要：MSI 每用户安装会把 node.exe 放到 <安装目录>，但 PATH 写进 HKCU Environment，
+// 当前进程（尤其是已运行的桌面端）读不到新 PATH —— 只靠 where/常见目录会"看不见"已装好的
+// Node，于是误判"未检测到 Node.js"并再次执行 MSI 安装，触发 1603（同产品已安装/版本冲突）。
+let registryNodeDirsCache = null;
+function registryNodeDirs() {
+  if (registryNodeDirsCache) return registryNodeDirsCache;
+  const dirs = [];
+  if (isWin) {
+    const hives = [
+      'HKLM\\SOFTWARE\\Node.js',
+      'HKCU\\SOFTWARE\\Node.js',
+      'HKLM\\SOFTWARE\\WOW6432Node\\Node.js',
+    ];
+    for (const hive of hives) {
+      try {
+        const r = spawnSync('reg', ['query', hive, '/v', 'InstallPath'], {
+          windowsHide: true, timeout: 4000, encoding: 'utf8',
+        });
+        if (r.status !== 0 || !r.stdout) continue;
+        const m = /InstallPath\s+REG_[A-Z_]+\s+(.+)/i.exec(r.stdout);
+        if (m && m[1]) dirs.push(m[1].trim().replace(/\\+$/, ''));
+      } catch (_) { /* 注册表读取失败不影响后续探测 */ }
+    }
+  }
+  registryNodeDirsCache = dirs;
+  return dirs;
+}
+
 // 官方 Node.js MSI 的常见安装位置（机器级 + 每用户安装），用于 PATH 未刷新时仍能定位 node.exe
 function knownNodeDirs() {
   const dirs = [];
@@ -835,9 +1244,17 @@ function knownNodeDirs() {
     const prog = process.env['ProgramFiles'] || 'C:\\Program Files';
     const prog86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
     const local = process.env['LOCALAPPDATA'] || path.join(os.homedir(), 'AppData', 'Local');
+    // 注册表里的真实安装目录优先（覆盖自定义安装路径 / 其它盘）
+    for (const d of registryNodeDirs()) dirs.push(d);
     dirs.push(path.join(prog, 'nodejs'));
     dirs.push(path.join(prog86, 'nodejs'));
     dirs.push(path.join(local, 'Programs', 'nodejs'));
+    // 其它常见包管理器安装位置（PATH 未刷新时仍能命中已装好的 Node）
+    dirs.push(path.join(os.homedir(), 'scoop', 'shims'));
+    dirs.push('C:\\ProgramData\\chocolatey\\bin');
+    dirs.push(path.join(local, 'Volta', 'bin'));
+    const nvmSymlink = process.env['NVM_SYMLINK'];
+    if (nvmSymlink) dirs.push(nvmSymlink);
     // nvm-windows 常见布局：<NVM_HOME>\v<version>
     const nvmHome = process.env['NVM_HOME'];
     if (nvmHome) {
@@ -856,7 +1273,69 @@ function knownNodeDirs() {
   return dirs;
 }
 
+// ============================================================
+//  绿色版（便携）Node.js 兜底安装
+//  官方 MSI 静默安装失败（1603 / 1606 / 1618 等）在 Windows 上非常常见：
+//    · 机器上已有旧大版本 Node（MSI 拒绝跨大版本升级，直接 1603）
+//    · Windows Installer 服务被组策略/优化工具禁用
+//    · 杀软/安全软件拦截 MSI 写入或删掉临时文件
+//    · 无管理员权限且 MSIINSTALLPERUSER 不被尊重
+//  官方 zip 是自包含绿色版（node.exe + npm + npx），解压即用、不需要 MSI、
+//  不需要管理员权限，因此作为 MSI 失败后的兜底方案。
+// ============================================================
+let portableNodePathCache = null; // 已就绪的绿色版 node.exe 绝对路径
+
+function portableNodeDir() {
+  try {
+    return path.join(app.getPath('userData'), 'node-portable');
+  } catch (e) {
+    return path.join(os.homedir(), '.dsh-desktop', 'node-portable');
+  }
+}
+
+// 在绿色版目录中定位 node.exe（zip 解压后通常有一层 node-vX-win-x64 子目录）
+function findPortableNodeExe() {
+  if (portableNodePathCache && fs.existsSync(portableNodePathCache)) return portableNodePathCache;
+  const name = isWin ? 'node.exe' : 'node';
+  const roots = [portableNodeDir()];
+  const found = [];
+  const scan = (dir, depth) => {
+    if (depth < 0) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const ent of entries) {
+      const p = path.join(dir, ent.name);
+      if (ent.isFile() && ent.name === name) { found.push(p); continue; }
+      if (ent.isDirectory() && depth > 0) scan(p, depth - 1);
+    }
+  };
+  for (const r of roots) scan(r, 2);
+  if (!found.length) return null;
+  // 多版本共存时取路径最深/最新修改的（最近一次解压的版本）
+  found.sort((a, b) => {
+    try { return fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs; } catch (e) { return 0; }
+  });
+  portableNodePathCache = found[0];
+  return portableNodePathCache;
+}
+
+// 把目录插到当前进程 PATH 最前面：之后所有子进程（node/npm/npx/pnpm 及其脚本）
+// 都继承到该目录，无需用户重启应用或重新登录。
+function prependProcessPath(dir) {
+  if (!dir) return;
+  const key = isWin ? 'Path' : 'PATH';
+  const cur = process.env[key] || process.env.PATH || '';
+  const parts = cur.split(path.delimiter).filter(Boolean);
+  if (parts.some((p) => p.toLowerCase() === dir.toLowerCase())) return;
+  const next = [dir, ...parts].join(path.delimiter);
+  process.env[key] = next;
+  process.env.PATH = next;
+}
+
 function findNodeExeSyncFallback() {
+  // 本应用兜底安装的官方绿色版（目录里多一层 node-vX-win-arch，需单独扫描）
+  const portable = findPortableNodeExe();
+  if (portable) return portable;
   const name = isWin ? 'node.exe' : 'node';
   for (const d of knownNodeDirs()) {
     const p = path.join(d, name);
@@ -988,10 +1467,131 @@ async function resolveLatestNodeVersion() {
       if (stable && stable.version) return String(stable.version).replace(/^v/, '');
     }
   } catch (e) { /* 回退 */ }
-  return '20.18.1'; // 官方 LTS 兜底版本
+  // 官方 LTS 兜底版本：dsh 0.2.x 的运行环境按 Node 24 构建（仓库根 engines 要求 >=24），
+  // 装 Node 20 会得到一个"能装上但 dsh 起不来"的环境，因此兜底值跟着抬到 24。
+  return '24.22.1';
 }
 
-// 自动安装官方 Node.js（MSI 静默每用户安装，无需管理员权限）
+// MSI 退出码 → 人话（便于用户与日志上报定位）
+const MSI_ERROR_HINTS = {
+  1603: '安装过程发生致命错误（常见：机器上已有旧大版本 Node 冲突、Windows Installer 服务被禁用、杀软拦截写入）',
+  1606: '无法访问网络位置（Windows Installer 服务未运行或权限不足）',
+  1618: '另一个安装程序正在运行，请稍后重试',
+  1619: '安装包无法打开（下载文件损坏或被安全软件隔离）',
+  1620: '安装包无效或损坏',
+  1625: '安装被系统策略禁止（组策略限制 Windows Installer）',
+  1633: '当前平台不支持该安装包',
+  1638: '已安装同产品的另一个版本（需先卸载旧版本）',
+  3010: '安装成功但需要重启系统',
+};
+
+function describeMsiCode(code) {
+  return MSI_ERROR_HINTS[code] || '未知安装错误';
+}
+
+// 从 MSI 详细日志中挑出关键行（"Return value 3" 附近 + Error 行），避免把几万行日志怼进面板
+function summarizeMsiLog(logFile) {
+  let text = '';
+  try {
+    if (!fs.existsSync(logFile)) return [];
+    text = fs.readFileSync(logFile, 'utf8');
+  } catch (e) { return []; }
+  if (!text) return [];
+  const lines = text.split(/\r?\n/);
+  const picked = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/Return value 3/i.test(l)) {
+      // 取返回码 3 之前的 3 行上下文（通常是真正失败的动作名 / 自定义动作输出）
+      picked.push(...lines.slice(Math.max(0, i - 3), i + 1));
+      if (picked.length > 30) break;
+    }
+  }
+  if (!picked.length) {
+    for (const l of lines) {
+      if (/Error \d{4}|error 1603|MainEngineThread|Product: |Installation failed/i.test(l)) picked.push(l);
+      if (picked.length > 20) break;
+    }
+  }
+  return picked.slice(0, 30).map((l) => l.trim()).filter(Boolean);
+}
+
+// 解压 zip：优先系统自带 tar.exe（Win10 1803+，速度快），失败再退回 PowerShell Expand-Archive
+async function extractZipArchive(zipPath, destDir) {
+  try { fs.mkdirSync(destDir, { recursive: true }); } catch (e) { /* ignore */ }
+  const sysRoot = process.env.SystemRoot || 'C:\\Windows';
+  const tarExe = path.join(sysRoot, 'System32', 'tar.exe');
+  if (fs.existsSync(tarExe)) {
+    const r = await runCommand(tarExe, ['-xf', zipPath, '-C', destDir], { timeoutMs: 10 * 60 * 1000 }, (s) => {
+      const line = String(s).replace(/\r?\n$/, '');
+      if (line.trim()) logLine('[环境] ' + line);
+    });
+    if (r.code === 0) return true;
+    logLine(`[环境] tar 解压失败（退出码 ${r.code}），改用 PowerShell 解压...`);
+  }
+  const ps1 = path.join(sysRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const ps = fs.existsSync(ps1) ? ps1 : 'powershell';
+  const q = (p) => String(p).replace(/'/g, "''");
+  const script = `Expand-Archive -LiteralPath '${q(zipPath)}' -DestinationPath '${q(destDir)}' -Force`;
+  const r2 = await runCommand(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+    { timeoutMs: 10 * 60 * 1000 }, (s) => {
+      const line = String(s).replace(/\r?\n$/, '');
+      if (line.trim()) logLine('[环境] ' + line);
+    });
+  return r2.code === 0;
+}
+
+// 兜底方案：下载官方绿色版 zip 并解压到 userData 目录（不需要 MSI / 管理员权限）
+async function installNodePortable(version) {
+  const arch = process.arch === 'ia32' ? 'win-x86' : 'win-x64';
+  const folder = `node-v${version}-${arch}`;
+  const url = `https://nodejs.org/dist/v${version}/${folder}.zip`;
+  const tmp = path.join(app.getPath('temp'), `${folder}.zip`);
+  const dir = portableNodeDir();
+  logLine(`[环境] 改用官方绿色版（zip）安装：${url}`);
+  setProgress(16, 'detect', `正在下载 Node.js v${version} 绿色版...`, '官方绿色版，无需管理员权限', '解压后立即可用，不影响系统其它 Node 安装');
+
+  try {
+    await downloadToFile(url, tmp, (received, total) => {
+      if (total > 0) {
+        const pct = 16 + Math.round((received / total) * 5);
+        setProgress(pct, 'detect', `正在下载 Node.js v${version} 绿色版（${formatBytes(received)} / ${formatBytes(total)}）...`);
+      }
+    });
+  } catch (e) {
+    logLine(`[环境] Node.js 绿色版下载失败：${e.message}`);
+    return null;
+  }
+
+  setProgress(21, 'detect', `正在解压 Node.js v${version}...`, '绿色版解压到应用数据目录', '解压完成后立即用于启动服务');
+  logLine(`[环境] 正在解压到 ${dir}`);
+  const ok = await extractZipArchive(tmp, dir);
+  // 解压完（成功或失败）即删除压缩包：解压后已无用途，占 30MB+ 磁盘
+  try { fs.rmSync(tmp, { force: true }); } catch (e) { /* ignore */ }
+  if (!ok) {
+    logLine('[环境] Node.js 绿色版解压失败');
+    return null;
+  }
+
+  // 解压后定位 node.exe 并实测一次（确保不是被安全软件截断的半成品）
+  portableNodePathCache = null;
+  registryNodeDirsCache = null;
+  const exe = findPortableNodeExe();
+  if (!exe) {
+    logLine('[环境] 绿色版解压完成但未找到 node.exe');
+    return null;
+  }
+  const v = await runCommand(exe, ['-v'], { timeoutMs: 30000 }, () => {});
+  if (v.code !== 0) {
+    logLine(`[环境] 绿色版 node.exe 无法运行（退出码 ${v.code}）：${v.error || ''}`);
+    return null;
+  }
+  logLine(`[环境] 绿色版 Node.js 已就绪：${exe}（${String(v.out).trim()}）`);
+  return exe;
+}
+
+// 自动安装官方 Node.js：先试 MSI 静默安装（写入系统 PATH，最"正规"），
+// 失败则退回官方绿色版 zip 解压（绕开一切 MSI/权限/冲突问题）。
 // 返回是否安装成功（随后可经 findNodeExe 定位 node.exe）
 async function installNodeOfficial() {
   setProgress(9, 'detect', '未检测到 Node.js，正在自动安装官方 Node.js（LTS）...',
@@ -999,46 +1599,92 @@ async function installNodeOfficial() {
   logLine('[环境] 未检测到 Node.js，开始自动安装官方 Node.js（LTS）...');
 
   const version = await resolveLatestNodeVersion();
-  const url = `https://nodejs.org/dist/v${version}/node-v${version}-x64.msi`;
-  const tmp = path.join(app.getPath('temp'), `node-v${version}-x64.msi`);
-  logLine(`[环境] 下载官方安装包：${url}`);
 
-  try {
-    await downloadToFile(url, tmp, (received, total) => {
-      if (total > 0) {
-        const pct = 9 + Math.round((received / total) * 6);
-        setProgress(pct, 'detect', `正在下载 Node.js v${version}（${formatBytes(received)} / ${formatBytes(total)}）...`);
+  // ---------- 第一步：MSI 静默安装（仅 Windows） ----------
+  if (isWin) {
+    const url = `https://nodejs.org/dist/v${version}/node-v${version}-x64.msi`;
+    const tmp = path.join(app.getPath('temp'), `node-v${version}-x64.msi`);
+    const msiLog = path.join(app.getPath('temp'), `node-v${version}-install.log`);
+    logLine(`[环境] 下载官方安装包：${url}`);
+    let downloaded = false;
+    try {
+      await downloadToFile(url, tmp, (received, total) => {
+        if (total > 0) {
+          const pct = 9 + Math.round((received / total) * 6);
+          setProgress(pct, 'detect', `正在下载 Node.js v${version}（${formatBytes(received)} / ${formatBytes(total)}）...`);
+        }
+      });
+      downloaded = true;
+    } catch (e) {
+      logLine(`[环境] Node.js 下载失败：${e.message}`);
+    }
+
+    if (downloaded) {
+      setProgress(15, 'detect', `正在安装 Node.js v${version}...`, '静默安装官方安装包', '安装完成后会自动写入用户环境变量（新终端生效）');
+      logLine('[环境] 正在静默安装 Node.js（msiexec /qn，每用户模式）...');
+      const msiexec = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'msiexec.exe') : 'msiexec';
+      // /l*v 输出详细安装日志：失败时才能知道到底哪一步炸了（1603 单独一个退出码说明不了问题）
+      const args = ['/i', tmp, '/qn', '/norestart', 'MSIINSTALLPERUSER=1', '/l*v', msiLog];
+      const r = await runCommand(msiexec, args, null, (s) => {
+        const line = String(s).replace(/\r?\n$/, '');
+        if (line.trim()) logLine('[环境] ' + line);
+      });
+      // msiexec 返回 0 为成功，3010 为"成功但需重启"；两者都视为安装成功
+      if (r.code === 0 || r.code === 3010) {
+        // 安装后定位 node.exe（PATH 可能尚未刷新，直接按官方安装目录 / 注册表查找）
+        registryNodeDirsCache = null;
+        const nodeExe = findNodeExeSyncFallback() || (await which('node'));
+        if (nodeExe) {
+          cachedNodeExe = null;
+          cachedNpmCli = null;
+          logLine(`[环境] Node.js 安装完成：${nodeExe}`);
+          return true;
+        }
+        logLine('[环境] MSI 安装完成但未找到 node.exe，改用绿色版兜底...');
+      } else {
+        logLine(`[环境] Node.js MSI 安装失败（msiexec 退出码 ${r.code}：${describeMsiCode(r.code)}）`);
+        const summary = summarizeMsiLog(msiLog);
+        if (summary.length) {
+          logLine('[环境] MSI 安装日志关键行：');
+          for (const l of summary) logLine('[环境]   ' + l);
+        } else {
+          logLine(`[环境] 详细安装日志：${msiLog}`);
+        }
       }
-    });
-  } catch (e) {
-    logLine(`[环境] Node.js 下载失败：${e.message}`);
+      // 安装包体积几十 MB，装完（成功或失败）即删，避免临时目录越积越大
+      try { fs.rmSync(tmp, { force: true }); } catch (e) { /* ignore */ }
+    }
+
+    // MSI 失败后先复查一次：可能是"另一个进程刚装好"或 PATH 未刷新，避免多余下载
+    registryNodeDirsCache = null;
+    const existing = findNodeExeSyncFallback() || (await which('node'));
+    if (existing) {
+      cachedNodeExe = null;
+      cachedNpmCli = null;
+      prependProcessPath(path.dirname(existing));
+      logLine(`[环境] 检测到已安装的 Node.js：${existing}`);
+      return true;
+    }
+  }
+
+  // ---------- 第二步：官方绿色版 zip 兜底（Windows） ----------
+  if (isWin) {
+    const exe = await installNodePortable(version);
+    if (exe) {
+      cachedNodeExe = exe;
+      cachedNpmCli = null;
+      // 把绿色版目录放到 PATH 最前：npm/npx 及其派生的 node 子进程都能直接命中
+      prependProcessPath(path.dirname(exe));
+      setProgress(24, 'detect', 'Node.js 运行环境已就绪（绿色版）');
+      return true;
+    }
+    logLine('[环境] 绿色版兜底安装同样失败，请手动安装 Node.js LTS 后重试');
     return false;
   }
 
-  setProgress(15, 'detect', `正在安装 Node.js v${version}...`, '静默安装官方安装包', '安装完成后会自动写入用户环境变量（新终端生效）');
-  logLine('[环境] 正在静默安装 Node.js（msiexec /qn，每用户模式）...');
-  const msiexec = process.env.SystemRoot ? path.join(process.env.SystemRoot, 'System32', 'msiexec.exe') : 'msiexec';
-  const r = await runCommand(msiexec, ['/i', tmp, '/qn', '/norestart', 'MSIINSTALLPERUSER=1'], null, (s) => {
-    const line = String(s).replace(/\r?\n$/, '');
-    if (line.trim()) logLine('[环境] ' + line);
-  });
-  // msiexec 返回 0 为成功，3010 为"成功但需重启"；两者都视为安装成功
-  if (r.code !== 0 && r.code !== 3010) {
-    logLine(`[环境] Node.js 安装失败（msiexec 退出码 ${r.code}）`);
-    return false;
-  }
-
-  // 安装后定位 node.exe（PATH 可能尚未刷新，直接按官方安装目录查找）
-  const nodeExe = findNodeExeSyncFallback() || (await which('node'));
-  if (!nodeExe) {
-    logLine('[环境] Node.js 安装完成但未找到 node.exe，请重启本应用后重试');
-    return false;
-  }
-  // 新装 Node：清除环境定位缓存，后续 findNodeExe/findNpmCli 用新路径
-  cachedNodeExe = null;
-  cachedNpmCli = null;
-  logLine(`[环境] Node.js 安装完成：${nodeExe}`);
-  return true;
+  // 非 Windows：不自动安装（macOS/Linux 官方分发为 pkg/tar，需系统权限），交回上层给出手动指引
+  logLine('[环境] 当前系统不支持自动安装 Node.js，请手动安装后重试');
+  return false;
 }
 
 // 解析官方最新 Git for Windows 版本号（失败时回退到固定稳定版本）
@@ -1254,15 +1900,71 @@ async function runNpmInstallSelfHealing(nodeExe, base, env, dir) {
 }
 
 // ============================================================
-//  模式选择（不再自动倒计时进入，由用户自行选择）
+//  模式选择
+//  返回用户（用过极速启动、本地环境已就绪）时不再让他干等点击：
+//  进入模式页 1 秒后自动按上次的方式开始倾斜启动，点击其它模式可随时改选。
+//  这就是"极速"的真正来源 —— dsh 自身要 30 秒，提前 1 秒开始就等于少等 29 秒。
 // ============================================================
-function selectMode(mode) {
+const PREWARM_DELAY_MS = 1000;
+let prewarmTimer = null;
+let prewarmed = false;   // 是否已按"上次模式"提前开始启动
+
+function modeLabel(mode) {
+  if (mode === 'quick') return '快速启动（npx）';
+  if (mode === 'repair') return '本地修复';
+  if (mode === 'local') return '极速启动（本地环境）';
+  if (mode === 'source') return '源码完整安装';
+  return String(mode);
+}
+
+// 进入模式页后自动预热：只预热极速启动（源码/修复依赖多、误触发代价大）
+function maybePrewarm() {
+  if (selectedMode || bootPhase !== 'mode') return;
+  // 老用户没有 lastMode 记录：只要本地环境已就绪，就按「极速启动」视为其常用模式
+  const last = loadAppConfig().lastMode || (localDshEntry() ? 'local' : null);
+  if (last !== 'local') return;
+  if (!localDshEntry()) {
+    logLine('[预热] 上次用的是极速启动，但本地环境尚未安装，跳过预热（请在首页选择模式）');
+    return;
+  }
+  logLine(`[预热] ${PREWARM_DELAY_MS / 1000} 秒后自动按上次方式「极速启动」开始（点其它模式可切换）`);
+  prewarmTimer = setTimeout(() => {
+    prewarmTimer = null;
+    if (selectedMode || bootPhase !== 'mode') return;
+    logLine('[预热] 开始提前启动服务（无需等待点击）');
+    selectMode('local', { prewarming: true });
+  }, PREWARM_DELAY_MS);
+}
+
+function selectMode(mode, opts) {
+  const byPrewarm = !!(opts && opts.prewarming);
+  // 预热期间用户点击：同一模式直接接续，不同模式先停掉预热
+  if (prewarmTimer) { clearTimeout(prewarmTimer); prewarmTimer = null; }
+  if (prewarmed && !byPrewarm) {
+    if (selectedMode === mode) {
+      logLine('[预热] 用户选择了同一个模式，继续正在进行的启动');
+      return;
+    }
+    logLine(`[预热] 用户改选「${modeLabel(mode)}」，停止预热中的服务并重新开始`);
+    prewarmed = false;
+    bootPhase = 'mode';
+    selectedMode = null;
+    stopWebService().catch(() => {});
+  }
   // 已选过且不在错误/已停止状态：忽略重复选择
   // 错误状态允许重新选择（如从错误界面直接进入"本地修复"）；已停止状态允许改选其他模式
   if (selectedMode && bootPhase !== 'error' && bootPhase !== 'stopped') return;
   selectedMode = mode;
+  if (byPrewarm) prewarmed = true;
   if (modeTimer) { clearInterval(modeTimer); modeTimer = null; }
-  logLine(`[模式] 用户选择：${mode === 'quick' ? '快速启动（npx）' : mode === 'repair' ? '本地修复' : mode === 'local' ? '极速启动（本地环境）' : '源码完整安装'}`);
+  // 记住上次用的常驻模式（修复是应急操作，不参与下次自动预热）
+  if (mode === 'local' || mode === 'source') {
+    try {
+      const cfg = loadAppConfig();
+      if (cfg.lastMode !== mode) { cfg.lastMode = mode; saveAppConfig(); }
+    } catch (e) { /* ignore */ }
+  }
+  logLine(`[模式] ${opts && opts.prewarming ? '自动' : '用户'}选择：${modeLabel(mode)}`);
   if (developerMode) {
     logLine('[模式] 开发者选项模式已开启：服务端后端与浏览器端热更 watcher（pnpm dev:web）将分离运行');
   }
@@ -1796,6 +2498,72 @@ function removePluginRefsFromProfiles(pkgNames) {
 //  只清理坏插件引用（profiles 目录），保留聊天记录/工作区/设置/凭据。
 //  清理前自动备份到 ~/.dsh-backups/，数据绝不丢失。
 // ============================================================
+// ------------------------------------------------------------
+//  官方恢复语义（对齐 dsh app-boot 的恢复函数）
+//  官方做法：禁用第三方 bundle + 把 profile 的 cordis.patch.yml 改名备份，
+//  **已安装的插件包与 node_modules 全部保留**；下次启动 patch 为空即干净启动。
+//  我们在此基础上多做一步：把用户偏好条目（主题 / 字号 / Agent 预设）提取出来写回
+//  新 patch，这样"修复"不会顺手把用户设置清掉。
+// ------------------------------------------------------------
+function officialRecoveryProfiles(profilesDir) {
+  const result = { profiles: 0, disabled: [], keptPrefs: 0, errors: [] };
+  if (!fs.existsSync(profilesDir)) return result;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let names = [];
+  try { names = fs.readdirSync(profilesDir); } catch (e) { result.errors.push(e.message); return result; }
+
+  for (const name of names) {
+    const dir = path.join(profilesDir, name);
+    try {
+      if (!fs.statSync(dir).isDirectory()) continue;
+      result.profiles += 1;
+
+      // 1) 剔除第三方 bundle（官方包 @deepseek-ai/* 全部保留）
+      const pkgFile = path.join(dir, 'package.json');
+      try {
+        const manifest = JSON.parse(fs.readFileSync(pkgFile, 'utf8'));
+        const bundles = manifest && manifest.dsh && manifest.dsh.profile && manifest.dsh.profile.bundles;
+        if (Array.isArray(bundles)) {
+          const kept = bundles.filter((n) => typeof n === 'string' && n.startsWith('@deepseek-ai/'));
+          const dropped = bundles.filter((n) => !kept.includes(n));
+          if (dropped.length) {
+            manifest.dsh.profile.bundles = kept;
+            fs.writeFileSync(pkgFile, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+            result.disabled.push(...dropped);
+          }
+        }
+      } catch (e) { /* profile 没有 manifest 或格式异常：跳过，不影响其它 profile */ }
+
+      // 2) 暂存用户偏好条目，备份并重置 patch
+      const patchFile = path.join(dir, 'cordis.patch.yml');
+      if (fs.existsSync(patchFile)) {
+        let text = '';
+        try { text = fs.readFileSync(patchFile, 'utf8'); } catch (e) { /* ignore */ }
+        const keep = [];
+        if (text) {
+          const { lines, entries } = dshSettings.splitTopLevelEntries(text);
+          for (const e of entries) {
+            const id = dshSettings.entryIdOf(e.text);
+            if (id && USER_PREF_ENTRY_RE.test(id)) {
+              keep.push(lines.slice(e.start, e.end).join('\n').replace(/\s+$/, ''));
+            }
+          }
+        }
+        try {
+          fs.copyFileSync(patchFile, `${patchFile}.bak-${stamp}`);
+          fs.writeFileSync(patchFile, keep.length ? keep.join('\n') + '\n' : '[]\n', 'utf8');
+          result.keptPrefs += keep.length;
+        } catch (e) {
+          result.errors.push(`patch 处理失败(${name})：${e.message}`);
+        }
+      }
+    } catch (e) {
+      result.errors.push(`${name}: ${e.message}`);
+    }
+  }
+  return result;
+}
+
 async function repairFlow() {
   // 1) 停止可能正在运行的 dsh 服务（本 App 启动的 + 端口上残留的旧服务）+ 开发者模式 watcher
   setProgress(15, 'install', '正在停止正在运行的 dsh 服务...');
@@ -1803,10 +2571,30 @@ async function repairFlow() {
   await stopDevWebWatcher();
   await killProcessOnPort(port);
 
-  // 2) 修复核心：自动备份 → 只清理坏插件引用（profiles），保留全部用户数据
-  setProgress(30, 'install', '正在备份数据并清理坏插件引用...',
-    '自动备份全部数据到 ~/.dsh-backups', '仅清理损坏的插件引用，聊天记录、工作区数据与设置都会保留');
-  await nukeLocalDshData();
+  // 2) 修复核心：先备份（数据安全网），再按官方语义恢复
+  setProgress(30, 'install', '正在备份数据并按官方恢复方式禁用第三方插件...',
+    '已安装的插件包会保留，只是暂时不加载',
+    '同时会备份并重置 profile 的 patch 配置；聊天记录、工作区数据与设置都会保留');
+  const dshHome = dshSettings.dshHomeDir();
+  await backupDshDataBeforeCleanup(dshHome);
+
+  const aggressive = process.env.DSH_DESKTOP_REPAIR_RESET === '1';
+  if (aggressive) {
+    logLine('[修复] 已启用彻底重置（DSH_DESKTOP_REPAIR_RESET=1）：将删除整个 profiles 目录');
+    await nukeLocalDshData();
+  } else {
+    const profilesDir = path.join(dshHome, 'profiles');
+    const r = officialRecoveryProfiles(profilesDir);
+    logLine(`[修复] 官方语义恢复完成：处理 ${r.profiles} 个 profile`
+      + `，禁用第三方 bundle ${r.disabled.length} 个${r.disabled.length ? '（' + r.disabled.join(', ') + '）' : ''}`
+      + `，保留用户偏好条目 ${r.keptPrefs} 条`);
+    for (const err of r.errors) logLine('[修复] 警告：' + err);
+    if (!r.profiles) logLine('[修复] 未发现 profiles 目录，跳过（下次启动会按官方默认重新生成）');
+    logLine('[修复] 已安装的插件包全部保留：如需彻底重置，设置环境变量 DSH_DESKTOP_REPAIR_RESET=1 后重试');
+  }
+
+  // 3) 凭据文件格式修复（旧版写入的 version 元数据会让新版 dsh 启动即崩）
+  await repairCredentialsFile();
 
   setProgress(80, 'install', '本地修复完成，准备启动服务...');
   return { ok: true };
@@ -2081,15 +2869,19 @@ async function sourceInstall(nodeExe) {
     }
   }
 
-  // 4) build
-  setProgress(75, 'install', '正在构建项目（pnpm run build）...',
+  // 4) build（脚本名按仓库实际 scripts 探测：官方 0.2.x 根目录是 build:web）
+  const buildScript = resolveRepoScript(repoPath, ['build', 'build:web']);
+  if (!buildScript) {
+    return { ok: false, error: '仓库里找不到构建脚本（build / build:web），请检查源码是否完整' };
+  }
+  setProgress(75, 'install', `正在构建项目（${buildScript.where}：${buildScript.script}）...`,
     '正在编译并打包全部模块', '构建可能需要几分钟，这是源码模式最耗时的步骤');
-  logLine('[源码] pnpm run build（可能需要几分钟）');
-  const r2 = await runCommand(nodeExe, [pnpmCli, 'run', 'build'], { cwd: repoPath, env: installEnv }, (s) => {
+  logLine(`[源码] pnpm ${buildScript.args.join(' ')}（可能需要几分钟）`);
+  const r2 = await runCommand(nodeExe, [pnpmCli, ...buildScript.args], { cwd: repoPath, env: installEnv }, (s) => {
     if (/error|ERR|failed|失败|Error|Built|done/i.test(s)) logLine(s.replace(/\r?\n$/, ''));
   });
   if (r2.code !== 0) {
-    return { ok: false, error: 'pnpm run build 失败，请查看日志' };
+    return { ok: false, error: `pnpm ${buildScript.script} 失败，请查看日志` };
   }
   // 记录「已安装且已构建」状态，供下次启动跳过 install/build
   markSourceBuilt(repoPath);
@@ -2099,10 +2891,11 @@ async function sourceInstall(nodeExe) {
 
 // 源码模式启动：pnpm dsh web（严格遵循官方规范）
 function sourceStartWeb(repoPath, nodeExe, pnpmCli) {
-  syncRemoteOverlay();
+  applyRemoteBinding();
   // dsh web 新版默认在就绪后自动打开系统默认浏览器；桌面版自行在 Electron 主窗口
   // 中打开 WebUI，必须显式 --no-open 避免弹出浏览器（旧版 dsh 会忽略未知参数，安全）。
-  // --patch 是 dsh launcher 自身参数，必须紧跟 web、放在所有 app 参数（--no-open/--host/--port）之前
+  // overlay 把 webserver.host 钉成选定网卡的具体 IPv4（0.2.1 起不再允许 0.0.0.0）；
+  // 桌面端自身的探活、主窗口、插件桥都用同一个 host，绑定局域网 IP 后仍能正常加载。
   const args = ['dsh', 'web', ...remoteControlArgs(), '--no-open', '--host', host, '--port', String(port)];
   const child = spawn(nodeExe, [pnpmCli, ...args], {
     cwd: repoPath,
@@ -2111,6 +2904,10 @@ function sourceStartWeb(repoPath, nodeExe, pnpmCli) {
     env: cleanServiceEnv(),
   });
   serverProc = child;
+  serviceSpawnAt = Date.now(); // 启动耗时统计：服务进程创建时刻
+  // dsh 的 listening / token 行既可能走 stdout 也可能走 stderr，两边都要挂（否则计时会失真）
+  if (child.stdout) child.stdout.on('data', (d) => noteServiceOutput(String(d)));
+  if (child.stderr) child.stderr.on('data', (d) => noteServiceOutput(String(d)));
   serverSpawnedByUs = true;
   let started = false;
   child.stdout && child.stdout.on('data', (d) => {
@@ -2160,7 +2957,6 @@ function onServiceExited() {
   serviceState.pid = null;
   serviceState.devMode = false;
   serviceState.devWebPid = null;
-  serviceState.remoteControl = false;
   serviceState.lanAddresses = [];
   // 后端退出时一并停止浏览器端热更 watcher（分离的两个进程同生共死）
   if (devWebProc) stopDevWebWatcher();
@@ -2265,10 +3061,11 @@ async function localInstall(nodeExe, npmCli) {
 
 // 离线启动：直接用 node 运行本地 dsh 包入口（不经过 npm exec，不依赖 registry）
 function localStartWeb(nodeExe, entry) {
-  syncRemoteOverlay();
+  applyRemoteBinding();
   // dsh web 新版默认在就绪后自动打开系统默认浏览器；桌面版自行在 Electron 主窗口
   // 中打开 WebUI，必须显式 --no-open 避免弹出浏览器（旧版 dsh 会忽略未知参数，安全）。
-  // --patch 是 dsh launcher 自身参数，必须紧跟 web、放在所有 app 参数（--no-open/--host/--port）之前
+  // overlay 把 webserver.host 钉成选定网卡的具体 IPv4（0.2.1 起不再允许 0.0.0.0）；
+  // 桌面端自身的探活、主窗口、插件桥都用同一个 host，绑定局域网 IP 后仍能正常加载。
   const args = ['web', ...remoteControlArgs(), '--no-open', '--host', host, '--port', String(port)];
   // 工作目录决定 dsh 会话数据的归属（历史数据能否读到），与快速/修复模式保持一致
   const workDir = resolveWorkspaceDir();
@@ -2280,6 +3077,10 @@ function localStartWeb(nodeExe, entry) {
     env: cleanServiceEnv(),
   });
   serverProc = child;
+  serviceSpawnAt = Date.now(); // 启动耗时统计：服务进程创建时刻
+  // dsh 的 listening / token 行既可能走 stdout 也可能走 stderr，两边都要挂（否则计时会失真）
+  if (child.stdout) child.stdout.on('data', (d) => noteServiceOutput(String(d)));
+  if (child.stderr) child.stderr.on('data', (d) => noteServiceOutput(String(d)));
   serverSpawnedByUs = true;
   let started = false;
   child.stdout && child.stdout.on('data', (d) => {
@@ -2330,8 +3131,22 @@ function cleanServiceEnv() {
   delete env.ELECTRON_IS_DEV;
   delete env.ELECTRON_NO_ATTACH_CONSOLE;
   delete env.npm_config_ignore_scripts; // 服务运行不需要跳过脚本
-  // 确保 PATH 可用
-  if (!env.PATH) env.PATH = process.env.Path || process.env.PATH;
+  // 确保 PATH 可用（Windows 上键名常为 "Path"，这里沿用已存在的键，避免出现两个同名不同大小写的键）
+  const pathKey = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
+  if (!env[pathKey]) env[pathKey] = process.env.Path || process.env.PATH || '';
+  // 绿色版/非常规目录安装的 Node：把 node.exe 所在目录放到 PATH 最前，
+  // 保证服务进程、npm 生命周期脚本里调用的 `node` / `npm` / `npx` 都能命中同一个运行时。
+  try {
+    // 优先用当前实际使用的 node（cachedNodeExe），保证 npm 生命周期脚本与运行时同版本
+    const nodeExe = cachedNodeExe || findPortableNodeExe() || findNodeExeSyncFallback();
+    if (nodeExe) {
+      const dir = path.dirname(nodeExe);
+      const parts = String(env[pathKey] || '').split(path.delimiter).filter(Boolean);
+      if (!parts.some((p) => p.toLowerCase() === dir.toLowerCase())) {
+        env[pathKey] = [dir, ...parts].join(path.delimiter);
+      }
+    }
+  } catch (e) { /* 定位失败不影响启动 */ }
   return env;
 }
 
@@ -2454,6 +3269,25 @@ function clearCrashCaches() {
   return cleared;
 }
 
+// dsh 0.2.x 的运行环境按 Node 24 构建（仓库根 engines 要求 >=24.9），旧版 Node 常表现为
+// 原生模块 ABI 不匹配 / 启动即退出。这里只做提示，不阻断启动（用户可能已在用可用的旧版本）。
+const DSH_MIN_NODE_MAJOR = 24;
+function warnIfNodeTooOld(nodeExe) {
+  try {
+    const ver = getNodeVersion(nodeExe);
+    if (!ver) return;
+    const major = parseInt(String(ver).split('.')[0], 10);
+    if (!Number.isFinite(major)) return;
+    if (major < DSH_MIN_NODE_MAJOR) {
+      logLine(`[环境] 当前 Node.js v${ver} 低于 dsh 0.2.x 的 Node ${DSH_MIN_NODE_MAJOR} 基线：`
+        + '可能出现原生模块 ABI 不匹配或服务启动后立即退出。建议升级到 Node.js 24 LTS'
+        + '（安装新版本后点「重新运行」即可，桌面端会自动使用新版本）。');
+    } else {
+      logLine(`[环境] Node.js v${ver}`);
+    }
+  } catch (e) { /* ignore */ }
+}
+
 // 获取用户系统实际的 Node.js 版本（dsh 服务用用户系统的 node.exe 运行，
 // 而非 Electron 内嵌版本；用于崩溃提示中给出准确的版本号）。
 function getNodeVersion(nodeExe) {
@@ -2528,11 +3362,12 @@ function startWebViaPnpm(nodeExe, pnpmCli) {
   // 关键：显式指定镜像源（国内默认 npmmirror）。之前这里没设置，会退回默认源
   // npmjs.org，在国内网络下下载 @deepseek-ai/dsh 慢到 500+ 秒仍装不上。
   baseEnv.npm_config_registry = npmRegistry;
-  syncRemoteOverlay();
+  applyRemoteBinding();
   // pnpm dlx <pkg> <args>：下载 pkg 后运行其 bin，<args> 原样传给 dsh 子命令
   // dsh web 新版默认在就绪后自动打开系统默认浏览器；桌面版自行在 Electron 主窗口
   // 中打开 WebUI，必须显式 --no-open 避免弹出浏览器（旧版 dsh 会忽略未知参数，安全）。
-  // --patch 是 dsh launcher 自身参数，必须紧跟 web、放在所有 app 参数（--no-open/--host/--port）之前
+  // overlay 把 webserver.host 钉成选定网卡的具体 IPv4（0.2.1 起不再允许 0.0.0.0）；
+  // 桌面端自身的探活、主窗口、插件桥都用同一个 host，绑定局域网 IP 后仍能正常加载。
   const args = ['dlx', PKG_NAME, 'web', ...remoteControlArgs(), '--no-open', '--host', host, '--port', String(port)];
   // 工作目录决定 dsh 会话数据的归属（历史数据能否读到）。解析一次并缓存，
   // 重试时保持一致，避免反复扫描 sessions 目录。
@@ -2554,6 +3389,10 @@ function startWebViaPnpm(nodeExe, pnpmCli) {
       env,
     });
     serverProc = child;
+  serviceSpawnAt = Date.now(); // 启动耗时统计：服务进程创建时刻
+  // dsh 的 listening / token 行既可能走 stdout 也可能走 stderr，两边都要挂（否则计时会失真）
+  if (child.stdout) child.stdout.on('data', (d) => noteServiceOutput(String(d)));
+  if (child.stderr) child.stderr.on('data', (d) => noteServiceOutput(String(d)));
     serverSpawnedByUs = true;
     started = false;
     startupOutput = '';
@@ -2719,6 +3558,45 @@ function startWebViaPnpm(nodeExe, pnpmCli) {
   spawnOnce();
 }
 
+// dsh-vault 插件的「上次是否正常退出」标记：~/.dsh-backups/.vault-run-state.json
+// 插件启动时写入 clean:false，只在收到 SIGINT/SIGTERM/beforeExit 时写 clean:true。
+// Windows 上我们只能用 taskkill /f（等于 TerminateProcess，拿不到信号），于是下次启动
+// 会被判定成"意外关闭"，立刻做一次全量备份（328 个会话 ≈ 30 秒），启动被硬拖长。
+// 既然这次是我们主动、可控地停止服务，就在进程结束后把标记补成 clean:true：
+// 下次改为走"正常启动 6 秒后后台备份"，数据安全网仍在，但不再阻塞启动。
+function vaultRunStatePath() {
+  return path.join(os.homedir(), '.dsh-backups', '.vault-run-state.json');
+}
+
+function markVaultRunStateClean() {
+  try {
+    const file = vaultRunStatePath();
+    if (!fs.existsSync(file)) return false; // 没装 dsh-vault：什么都不做
+    let data = null;
+    try {
+      // 插件是走 PowerShell `Set-Content -Encoding UTF8` 写的：Windows PowerShell 5.1
+      // 会在文件开头加 UTF-8 BOM（\uFEFF）。直接 JSON.parse 必定抛
+      // "Unexpected token '﻿'"，于是这里永远 return false、clean 永远写不进去，
+      // 每次启动都被判成"上次未正常退出"→ 立刻跑一次 190MB 全量备份抢 I/O。必须剥 BOM。
+      const raw = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '').trim();
+      data = JSON.parse(raw);
+    } catch (e) {
+      logLine('[停止] 运行状态标记读取/解析失败，已跳过标记：' + ((e && e.message) || e));
+      return false;
+    }
+    // 只认我们理解的结构（有布尔 clean 字段），插件改了格式就放弃，绝不乱写
+    if (!data || typeof data.clean !== 'boolean') return false;
+    data.clean = true;
+    data.at = new Date().toISOString();
+    data.by = 'dsh-desktop';
+    fs.writeFileSync(file, JSON.stringify(data), 'utf8');
+    logLine('[停止] 已标记上次运行正常退出（下次启动不再触发「意外关闭备份」，可省约 30 秒）');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
 async function stopWebService() {
   if (!serverProc || !serverSpawnedByUs) return;
   // 先摘除引用再 kill：子进程 exit 事件触发时 serverProc 已不是它，
@@ -2735,6 +3613,36 @@ async function stopWebService() {
       proc.kill('SIGTERM');
     }
   } catch (e) { /* ignore */ }
+  // 进程已结束：补上"正常退出"标记，避免下次启动被 dsh-vault 拖去全量备份
+  markVaultRunStateClean();
+}
+
+// 启动超时/失败时，用官方 `--dump-config` 打印"实际生效的配置"，重点看 webserver：
+// 这是判断我们注入的 --patch overlay 有没有命中的唯一可靠办法（手机连不上时最常见根因是
+// profile patch 或 bundle 层把 host/port 又盖回去了，而桌面端只看得到自己的文件写对了）。
+async function diagnoseEffectiveConfig(nodeExe) {
+  try {
+    const entry = localDshEntry();
+    if (!entry || !nodeExe) return;
+    const args = [entry, '--profile', 'web'];
+    if (remoteOverlayFile) args.push('--patch', remoteOverlayFile);
+    args.push('--dump-config');
+    const r = await runCommand(nodeExe, args, { timeoutMs: 20000 }, () => {});
+    const out = String(r.out || '');
+    if (!out.trim()) {
+      logLine('[诊断] 官方 --dump-config 无输出（可能 profile 解析失败），已跳过配置校验');
+      return;
+    }
+    const hit = /webserver/.test(out);
+    logLine(`[诊断] 官方 --dump-config：${hit ? '已找到 webserver 条目' : '未找到 webserver 条目（overlay 可能没命中）'}`);
+    const lines = out.split(/\r?\n/);
+    const idx = lines.findIndex((l) => /webserver/.test(l));
+    const slice = idx >= 0 ? lines.slice(idx, idx + 8) : lines.slice(0, 8);
+    for (const l of slice) logLine('[诊断]   ' + l.trim().slice(0, 200));
+    if (remoteOverlayFile) logLine('[诊断] 本次注入的 overlay：' + remoteOverlayFile);
+  } catch (e) {
+    logLine('[诊断] 配置校验失败（不影响结论）：' + e.message);
+  }
 }
 
 // ============================================================
@@ -2743,8 +3651,37 @@ async function stopWebService() {
 //  改动后重建 bundle，后端 stat-poll 到变化即广播 rebuilt 帧，
 //  浏览器免刷新热更 —— 即 DSH 官方前端开发方式。
 // ============================================================
+// 官方仓库的脚本名会随版本变化：0.2.x 根 scripts 只剩 `build:web`，`dev:web` 已经
+// 挪到 apps/web 里。写死脚本名迟早失效，这里按「根 scripts → apps/web/scripts」探测。
+function resolveRepoScript(repoPath, candidates) {
+  const readPkg = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } };
+  const root = readPkg(path.join(repoPath, 'package.json'));
+  if (root && root.scripts) {
+    for (const c of candidates) {
+      if (root.scripts[c]) return { args: ['run', c], where: '根目录', script: c };
+    }
+  }
+  const web = readPkg(path.join(repoPath, 'apps', 'web', 'package.json'));
+  if (web && web.scripts) {
+    for (const c of candidates) {
+      if (web.scripts[c]) {
+        const name = web.name || '@deepseek-ai/dsh-web-app';
+        return { args: ['--filter', name, 'run', c], where: 'apps/web', script: c };
+      }
+    }
+  }
+  return null;
+}
+
 function startDevWebWatcher(repoPath, nodeExe, pnpmCli) {
-  const child = spawn(nodeExe, [pnpmCli, 'run', 'dev:web'], {
+  const devScript = resolveRepoScript(repoPath, ['dev:web', 'dev']);
+  if (!devScript) {
+    logLine('[dev:web] 当前仓库没有可用的前端 dev 脚本（根目录与 apps/web 均未找到 dev:web / dev），'
+      + '已跳过热更 watcher：服务照常启动，只是改动前端源码后不会自动重建。');
+    return;
+  }
+  logLine(`[dev:web] 使用 ${devScript.where} 的脚本：${devScript.script}`);
+  const child = spawn(nodeExe, [pnpmCli, ...devScript.args], {
     cwd: repoPath,
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -2807,11 +3744,16 @@ async function ensureSourceRepoReady(nodeExe, npmCli) {
       npm_config_progress: 'true',
       NPM_CONFIG_LOGLEVEL: 'info',
     };
-    const br = await runCommand(nodeExe, [pnpmCli, 'run', 'build'], { cwd: repoPath, env: buildEnv }, (s) => {
+    const buildScript = resolveRepoScript(repoPath, ['build', 'build:web']);
+    if (!buildScript) {
+      return { ok: false, error: '仓库里找不到构建脚本（build / build:web），请检查源码是否完整' };
+    }
+    logLine(`[源码] 自动构建前端：pnpm ${buildScript.args.join(' ')}`);
+    const br = await runCommand(nodeExe, [pnpmCli, ...buildScript.args], { cwd: repoPath, env: buildEnv }, (s) => {
       if (/error|ERR|failed|失败|Error|Built|done/i.test(s)) logLine(s.replace(/\r?\n$/, ''));
     });
     if (br.code !== 0) {
-      return { ok: false, error: '自动构建前端失败（pnpm run build），请查看日志。如持续失败，可尝试「源码完整安装」重新安装。' };
+      return { ok: false, error: `自动构建前端失败（pnpm ${buildScript.script}），请查看日志。如持续失败，可尝试「源码完整安装」重新安装。` };
     }
     if (!fs.existsSync(path.join(repoPath, 'apps', 'web', 'dist', 'index.html'))) {
       return { ok: false, error: '构建已完成但仍未生成 apps/web/dist，请尝试「本地修复」或「源码完整安装」。' };
@@ -2841,45 +3783,214 @@ async function quitApp() {
   app.quit();
 }
 
-// 终止占用指定端口的进程（启动前清理旧服务，保证干净启动）
-async function killProcessOnPort(checkPort) {
+// 终止占用指定端口的进程。
+// 默认只结束「命令行看起来就是 dsh」的进程：端口上可能是用户手动起的 dsh（可清），
+// 也可能是别的软件（绝不清）。确实需要无条件清理时传 { onlyDsh: false }。
+async function killProcessOnPort(checkPort, opts) {
+  const onlyDsh = !opts || opts.onlyDsh !== false;
+  let occupants = [];
+  try {
+    occupants = await listPortOccupants(checkPort);
+  } catch (e) {
+    return false;
+  }
+  if (!occupants.length) return false;
+  let killed = false;
+  for (const o of occupants) {
+    if (onlyDsh && !(await pidLooksLikeDsh(o.pid))) {
+      logLine(`[诊断] 端口 ${checkPort} 上的 ${o.name || 'unknown'}(PID ${o.pid}) 不是 dsh 进程，跳过`);
+      continue;
+    }
+    logLine('[诊断] 结束端口 ' + checkPort + ' 上的进程: ' + (o.name || 'node') + '(PID ' + o.pid + ')');
+    await terminatePid(o.pid);
+    killed = true;
+  }
+  return killed;
+}
+
+// ------------------------------------------------------------
+//  端口让位（对齐官方桌面端「绝不与其它实例抢端口」的做法）
+//  官方 Desktop 用 `--port 0` 让系统分配端口，从根源上避免 EADDRINUSE；
+//  桌面端仍需要一个稳定端口给手机直连，所以保留固定端口，但改为：
+//    · 只清理「本 App 启动的 / 命令行明显是 dsh 的」残留进程；
+//    · 端口被其它程序占用时不再强杀，自动换一个可用端口。
+// ------------------------------------------------------------
+function terminatePid(pid) {
   return new Promise((resolve) => {
+    if (!pid) return resolve(false);
     if (isWin) {
-      execFile('netstat', ['-ano', '-p', 'TCP'], { windowsHide: true }, (err, stdout) => {
-        if (err) { resolve(false); return; }
-        const lines = String(stdout).split(/\r?\n/);
-        const pids = new Set();
-        for (const line of lines) {
-          // 匹配形如 "  TCP    127.0.0.1:3080    0.0.0.0:0    LISTENING    19220"
-          // 或 IPv6 "  TCP    [::]:3080    0.0.0.0:0    LISTENING    19220"
-          const m = line.match(/TCP\s+(?:\[[0-9a-f:.]+\]|\S+):(\d+)\s+\S+\s+(?:LISTENING|ESTABLISHED)\s+(\d+)\s*$/i);
-          if (m && Number(m[1]) === checkPort) pids.add(Number(m[2]));
-        }
-        if (pids.size === 0) { resolve(false); return; }
-        logLine('[诊断] killProcessOnPort 将终止端口 ' + checkPort + ' 的进程: ' + [...pids].join(','));
-        const killAll = [...pids].map((pid) => new Promise((res) => {
-          execFile('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true }, () => res());
-        }));
-        Promise.all(killAll).then(() => resolve(true));
-      });
-      return;
+      return execFile('taskkill', ['/pid', String(pid), '/t', '/f'], { windowsHide: true }, () => resolve(true));
     }
-    if (process.platform === 'darwin') {
-      // macOS：lsof -ti tcp:<port> 取占用端口的 PID 后 kill -9
-      execFile('lsof', ['-ti', `tcp:${checkPort}`], { windowsHide: true }, (err, stdout) => {
-        if (err) { resolve(false); return; }
-        const pids = String(stdout).split(/\r?\n/).map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n) && n > 0);
-        if (pids.length === 0) { resolve(false); return; }
-        logLine('[诊断] killProcessOnPort 将终止端口 ' + checkPort + ' 的进程: ' + pids.join(','));
-        const killAll = pids.map((pid) => new Promise((res) => {
-          execFile('kill', ['-9', String(pid)], {}, () => res());
-        }));
-        Promise.all(killAll).then(() => resolve(true));
-      });
-      return;
-    }
-    resolve(false);
+    try { process.kill(pid, 'SIGKILL'); } catch (e) { /* 进程可能已退出 */ }
+    resolve(true);
   });
+}
+
+// 读取进程命令行（判断是不是我们自己的 dsh 残留进程），带缓存避免重复起子进程
+const pidCommandLineCache = new Map();
+function commandLineOfPid(pid) {
+  if (!pid) return Promise.resolve('');
+  if (pidCommandLineCache.has(pid)) return Promise.resolve(pidCommandLineCache.get(pid));
+  return new Promise((resolve) => {
+    const done = (line) => {
+      const v = String(line || '').trim();
+      pidCommandLineCache.set(pid, v);
+      resolve(v);
+    };
+    if (isWin) {
+      const ps = process.env.SystemRoot
+        ? path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        : 'powershell';
+      // -NoProfile 避免加载用户配置拖慢；CIM 查询比 wmic 更可靠（wmic 已在新系统移除）
+      const script = `(Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}").CommandLine`;
+      return execFile(ps, ['-NoProfile', '-NonInteractive', '-Command', script],
+        { windowsHide: true, timeout: 8000 }, (err, stdout) => done(err ? '' : stdout));
+    }
+    execFile('ps', ['-o', 'command=', '-p', String(pid)], { windowsHide: true, timeout: 5000 },
+      (err, stdout) => done(err ? '' : stdout));
+  });
+}
+
+// 命令行里出现 dsh 特征 → 认为是我们自己的残留服务（可以安全结束）
+const DSH_CMDLINE_RE = /@deepseek-ai[\\/]dsh|dsh[\\/]lib[\\/]bin|dsh-web-app|dsh-local|node_modules[\\/]@deepseek-ai/i;
+async function pidLooksLikeDsh(pid) {
+  const line = await commandLineOfPid(pid);
+  return DSH_CMDLINE_RE.test(line);
+}
+
+// 在指定地址上尝试监听，判断端口是否真的可用（比「有没有人 connect 得上去」更准）
+function canBindPort(bindHost, p) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      try { srv.close(); } catch (e) { /* ignore */ }
+      resolve(ok);
+    };
+    srv.once('error', () => finish(false));
+    try {
+      srv.listen({ port: p, host: bindHost, exclusive: true }, () => finish(true));
+    } catch (e) {
+      finish(false);
+    }
+    setTimeout(() => finish(false), 2000);
+  });
+}
+
+// 从 startPort 起找一个可用端口（逐个试，最多 span 个）
+async function findAvailablePort(startPort, probeHosts, span) {
+  const from = Math.max(1024, Number(startPort) || 3080);
+  for (let i = 0; i < (span || 30); i++) {
+    const candidate = from + i;
+    if (candidate > 65535) break;
+    let ok = true;
+    for (const h of probeHosts) {
+      if (!(await canBindPort(h, candidate))) { ok = false; break; }
+    }
+    if (ok) return candidate;
+  }
+  return null;
+}
+
+// 端口冲突询问：决定权交给用户（主进程 → 渲染层弹窗 → 回传决定）
+let portDecisionResolve = null;
+let portDecisionTimer = null;
+
+function askPortConflict(info) {
+  const looksLikeDsh = (info.items || []).some((i) => i.looksLikeDsh);
+  const fallback = looksLikeDsh ? 'kill' : 'switch';
+  if (!bootWindow || bootWindow.isDestroyed()) {
+    // 没有可询问的界面（理论上不会发生）：按最保守策略处理
+    return Promise.resolve(fallback);
+  }
+  return new Promise((resolve) => {
+    const finish = (action) => {
+      if (portDecisionResolve !== finish) return;
+      portDecisionResolve = null;
+      if (portDecisionTimer) { clearTimeout(portDecisionTimer); portDecisionTimer = null; }
+      resolve(action || fallback);
+    };
+    portDecisionResolve = finish;
+    portDecisionTimer = setTimeout(() => {
+      logLine('[启动] 端口占用询问等待超时（60 秒），按默认策略继续');
+      finish(fallback);
+    }, 60000);
+    logLine(`[启动] 端口 ${info.port} 被占用，已弹窗询问用户如何处理`);
+    broadcast('boot:port-conflict', { port: info.port, items: info.items });
+  });
+}
+
+// 确保端口可用：先问用户，再按决定清理或换端口
+async function ensureUsablePort() {
+  // 只探测「接下来真正要绑定的那个地址」：绑局域网 IP 时，别的程序占着 127.0.0.1 的
+  // 同名端口并不妨碍我们（Windows 允许不同地址同端口共存），不该因此白白换端口。
+  const lan = pickLanIPv4();
+  const probeHosts = [lan || '127.0.0.1'];
+  const usable = async (p) => {
+    for (const h of probeHosts) {
+      if (!(await canBindPort(h, p))) return false;
+    }
+    return true;
+  };
+
+  if (await usable(port)) return port;
+
+  logLine(`[启动] 端口 ${port} 当前不可用，正在识别占用者...`);
+  const items = [];
+  try {
+    const occupants = await listPortOccupants(port);
+    for (const o of occupants) {
+      items.push({
+        pid: o.pid,
+        name: o.name || 'unknown',
+        looksLikeDsh: (serverProc && serverProc.pid === o.pid) || (await pidLooksLikeDsh(o.pid)),
+      });
+    }
+  } catch (e) { /* 诊断失败按无占用处理 */ }
+  if (!items.length) {
+    items.push({ pid: null, name: 'unknown', looksLikeDsh: false });
+  }
+  for (const it of items) {
+    logLine(`[启动] 端口占用者：${it.name}(PID ${it.pid || '?'})${it.looksLikeDsh ? '（疑似 dsh 进程）' : '（非 dsh 进程）'}`);
+  }
+
+  const action = await askPortConflict({ port, items });
+
+  if (action === 'cancel') {
+    logLine('[启动] 用户取消了本次启动（端口被占用）');
+    bootError('已取消启动：端口被占用。需要时可以再次点击「重新运行」，或让桌面端改用其它端口（--port）。', null, 'port-conflict-cancelled');
+    return null;
+  }
+
+  if (action === 'kill') {
+    for (const it of items) {
+      if (!it.pid) continue;
+      logLine(`[启动] 按用户选择结束进程：${it.name}(PID ${it.pid})`);
+      await terminatePid(it.pid);
+    }
+    for (let i = 0; i < 25; i++) {
+      if (await usable(port)) {
+        logLine(`[启动] 端口 ${port} 已释放，继续启动`);
+        return port;
+      }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    logLine(`[启动] 已结束占用进程但端口 ${port} 仍未释放，改为自动选择可用端口`);
+  }
+
+  // switch（或 kill 后仍不可用）：换一个可用端口
+  const alt = (await findAvailablePort(port + 1, probeHosts, 30))
+    || (await findAvailablePort(DEFAULT_PORT + 1, probeHosts, 60));
+  if (!alt) {
+    logLine(`[警告] 未找到可用端口，仍尝试使用 ${port}（可能启动失败）`);
+    return port;
+  }
+  logLine(`[启动] 已改用端口 ${alt}（手机直连地址会随之变化；如需固定端口可用 --port 指定）`);
+  port = alt;
+  serviceState.port = alt;
+  return port;
 }
 
 // 列出占用指定端口的进程（PID + 进程名），仅用于诊断与多实例提示。
@@ -2919,35 +4030,40 @@ async function listPortOccupants(checkPort) {
   return out;
 }
 
-// 启动时立刻终结占用端口的旧服务（App 启动瞬间执行，不依赖模式选择）
+// 启动时立刻处理占用端口的旧服务（App 启动瞬间执行，不依赖模式选择）
+// 对齐官方桌面端的做法：绝不去抢别人的端口 —— 只结束「本 App 启动的 / 命令行是 dsh 的」
+// 残留进程；真正的陌生程序占用时留给 ensureUsablePort 自动换端口。
 async function cleanupOldService() {
   logLine('[启动] 正在检测端口 ' + port + ' 上的旧服务...');
   if (await isPortOpen(port)) {
-    // 多实例提示：dsh 0.1.7 起官方支持多实例共存，会话被其他实例占用时会给出
-    // 明确报错（提示退出对应实例后重试）。桌面端仍需要独占该端口，因此这里
-    // 把「要结束的是别人的实例」显式说明，而不是静默 kill。
     try {
       const occupants = await listPortOccupants(port);
       const ownPid = serverProc ? serverProc.pid : null;
-      const foreign = occupants.filter((o) => o.pid !== ownPid);
-      if (foreign.length > 0) {
-        logLine('[实例] 端口 ' + port + ' 被本 App 之外的进程占用：'
-          + foreign.map((o) => `${o.name || 'unknown'}(PID ${o.pid})`).join('、'));
-        logLine('[实例] dsh 0.1.7 起支持多个 DSH 实例共存，但桌面端需要独占该端口才能启动自己的服务，稍后将结束上述进程；'
-          + '若它是你手动启动的 dsh（例如终端里的 dsh web），请让桌面端改用其他端口：npm start -- --port <端口>');
+      for (const o of occupants) {
+        const isOurs = (ownPid && o.pid === ownPid) || (await pidLooksLikeDsh(o.pid));
+        if (isOurs) {
+          logLine('[启动] 发现残留 dsh 进程：' + (o.name || 'node') + '(PID ' + o.pid + ')，稍后结束');
+        } else {
+          logLine('[实例] 端口 ' + port + ' 被其它程序占用：' + (o.name || 'unknown') + '(PID ' + o.pid + ')'
+            + '，不会结束它；若端口确实不可用，启动时会自动改用其它端口');
+        }
       }
     } catch (e) { /* 诊断失败不影响清理 */ }
     // 先停掉由本 App 启动的服务进程
     if (serverProc) await stopWebService();
-    // 再强制终止端口上残留的进程（可能是用户手动 npx 启动的旧服务）
+    // 再结束端口上残留的 dsh 进程（可能是上次异常退出留下的）
     const killed = await killProcessOnPort(port);
-    if (killed) logLine('[启动] 已停止旧服务进程');
-    // 等待端口完全释放
+    if (killed) logLine('[启动] 已停止残留的 dsh 进程');
+    // 等待端口释放
     for (let i = 0; i < 20; i++) {
       if (!(await isPortOpen(port))) break;
       await new Promise((r) => setTimeout(r, 300));
     }
-    logLine('[启动] 端口已释放');
+    if (await isPortOpen(port)) {
+      logLine('[启动] 端口仍被占用，启动流程会自动改用其它可用端口');
+    } else {
+      logLine('[启动] 端口已释放');
+    }
   } else {
     logLine('[启动] 端口空闲，无需清理');
   }
@@ -3000,11 +4116,19 @@ async function run() {
   // 重置进度：重新运行时清零，保证新进度从 0 单调递增到 100（见 setProgress）
   resetProgress();
 
+  // 启动耗时起点（用于回答"为什么启动慢"）
+  bootStartedAt = Date.now();
+  serviceSpawnAt = 0;
+  serviceFirstOutputAt = 0;
+  serviceListenAt = 0;
+  logLine(`[计时] 开始启动（模式：${selectedMode}）`);
+
   // 0.1) 并发测速选择最快 npm 镜像（等待选出最快源后再安装，避免用默认源 npmjs.org 装不上；结果缓存，插件安装复用）
-  //     离线启动模式若本地环境已就绪则跳过测速，保证完全离线时无需网络探测即可秒级启动
-  if (!(selectedMode === 'local' && localDshEntry())) {
-    await ensureRegistrySelected();
-  }
+  //     离线启动模式若本地环境已就绪则跳过测速，保证完全离线时无需网络探测即可秒级启动。
+  //     镜像测速与端口清理互不依赖，这里改成并行：串行会白白多等 3~7 秒（用户感知为"启动很慢"）。
+  const registryTask = (selectedMode === 'local' && localDshEntry())
+    ? Promise.resolve()
+    : ensureRegistrySelected().catch(() => {});
 
   // 1) 确保端口已释放再启动新服务：等待启动瞬间的端口清理完成（最长 10s），
   //    超时则强制终止端口占用进程并等待释放，避免旧服务/残留进程抢占端口导致
@@ -3014,16 +4138,14 @@ async function run() {
     await new Promise((r) => setTimeout(r, 100));
   }
   if (!portCleanupDone) {
-    logLine('[启动] 端口清理未完成，强制终止端口占用进程...');
-    await killProcessOnPort(port);
-    for (let i = 0; i < 20; i++) {
-      if (!(await isPortOpen(port))) break;
-      await new Promise((r) => setTimeout(r, 300));
-    }
+    logLine('[启动] 端口清理未完成，启动前再确认一次端口可用性...');
   }
-  if (await isPortOpen(port)) {
-    logLine('[警告] 端口 ' + port + ' 仍被占用，新服务可能启动失败');
-  }
+  // 端口最终裁决：弹窗询问用户（结束占用进程 / 改用其它端口 / 取消启动）
+  const usablePort = await ensureUsablePort();
+  if (usablePort == null) return; // 用户选择取消启动，bootError 已在内部处理
+  logLine(`[计时] 端口就绪：+${((Date.now() - bootStartedAt) / 1000).toFixed(1)} 秒`);
+  // 镜像测速在后台已经跑完（与上面的端口检查并行），这里只等结果，不再串行等一遍
+  await registryTask;
 
   // 1) 环境检测：缺失时自动安装官方 Node.js（含 npm），
   //    不再只给官网链接把用户推向"修复模式"形成引导死循环。
@@ -3033,15 +4155,25 @@ async function run() {
     const installed = await installNodeOfficial();
     nodeExe = installed ? (await findNodeExe()) : null;
     if (!nodeExe) {
-      bootError('未检测到 Node.js，且自动安装失败。请手动从 https://nodejs.org/ 下载 LTS 版安装后，重新启动本应用。');
+      bootError(
+        '未检测到 Node.js，自动安装失败（已依次尝试官方 MSI 静默安装与官方绿色版解压，均未成功）。'
+        + '请手动从 https://nodejs.org/ 下载 LTS 版安装后，重新启动本应用；诊断日志会自动上传，便于我们定位原因。',
+        null,
+        'node-install-failed'
+      );
       return;
     }
   }
   setProgress(18, 'detect', 'Node.js 环境正常');
+  warnIfNodeTooOld(nodeExe);
+  logLine(`[计时] Node 环境就绪：+${((Date.now() - bootStartedAt) / 1000).toFixed(1)} 秒`);
 
   // 极速启动且本地环境已就绪：无需 npm（直接用 node 运行本地包入口），
   // 跳过 findNpmCli 省去一次 which('npm') 子进程，进一步缩短启动时间。
   const localEntryReady = selectedMode === 'local' && localDshEntry();
+  // 本地环境已就绪时切换到「不安装」的步骤表：这一步必须发生在任何 setProgress 之前，
+  // 否则进度页会沿用含「安装本地运行环境」的 local 表，显示与实际动作不符的步骤名。
+  if (selectedMode === 'local' && localEntryReady) currentSteps = MODE_STEPS.localReady;
   const npmCli = localEntryReady ? null : await findNpmCli();
 
   if (selectedMode === 'repair') {
@@ -3067,7 +4199,8 @@ async function run() {
     // 不依赖网络解析，二次以后启动最快最稳（首次安装仍需联网一次）。
     if (localEntryReady) {
       // 本地环境已就绪：跳过 localInstall 的重复检查，直接启动
-      setProgress(78, 'start', '正在启动本地 dsh 服务（极速模式）...');
+      // 62% 对应 localReady 步骤表的「启动本地 dsh 服务」（这张表没有安装步骤）
+      setProgress(62, 'start', '正在启动本地 dsh 服务（极速模式）...');
       localStartWeb(nodeExe, localEntryReady);
     } else {
       setProgress(20, 'detect', '准备极速启动环境...');
@@ -3138,19 +4271,29 @@ async function run() {
     // 从当前已到达的百分比继续推进（不固定从 60 起步），最高 95%，
     // 最终 100% 由下方的 setProgress(100,'ready') 完成 —— 保证所有模式都能到 100%。
     const base = bootProgressPercent >= 10 ? bootProgressPercent : 60;
-    const pct = Math.min(base + (elapsed / 600) * 35, 95);
+    const pct = Math.min(base + (elapsed / 40) * 30, 95);
+    // 步骤与百分比必须用同一个值：以前 percent 取 max(bootProgressPercent, pct)、
+    // step 却用 pct，两者不一致时步骤会往回跳。
+    const shown = Math.round(Math.max(bootProgressPercent, pct));
+    // 文案按「进程真实走到哪一步 + 已等待多久」分级，覆盖首次启动、杀软扫描、
+    // 插件过多、网络/镜像慢等不同情况（见 describeStartPhase）。
+    const copy = describeStartPhase(elapsed, { mode: selectedMode, dev: developerMode });
     broadcast('boot:progress', {
-      percent: Math.round(Math.max(bootProgressPercent, pct)),
+      percent: shown,
       stage: 'start',
-      text: `正在启动服务，已等待 ${elapsed} 秒...`,
-      detail: '正在加载 dsh 运行环境与插件（dsh 打印访问令牌前界面无法打开），请耐心等待',
-      step: resolveStep(pct),
+      text: copy.text,
+      detail: copy.detail,
+      hint: copy.hint || '',
+      step: resolveStep(shown),
     });
   }, () => bootPhase === 'error');
   if (bootPhase === 'error') return; // 子进程已退出并报错，交给错误界面处理
   if (!ready) {
     // 官方 0.1.7 会分类报错并落盘完整诊断；若我们已识别到已知信号，直接把指引带上
     const diag = startupDiagnostics.length > 0 ? `（已识别官方诊断：${startupDiagnostics[0].hint}）` : '';
+    // 超时时用官方 --dump-config 看一眼"实际生效的 webserver 配置"，
+    // 判断我们注入的 overlay 到底有没有命中（手机连不上/端口不符时最有用）
+    await diagnoseEffectiveConfig(nodeExe);
     bootError(`Web UI 启动超时，请查看下方日志排查问题${diag}`);
     return;
   }
@@ -3163,6 +4306,13 @@ async function run() {
 function finishBoot() {
   bootPhase = 'running';
   stopInstallTicker();
+  // 启动耗时总账：把"慢在哪"直接写进日志，便于用户反馈与后续优化
+  if (bootStartedAt) {
+    const total = (Date.now() - bootStartedAt) / 1000;
+    const serviceSec = serviceSpawnAt ? (Date.now() - serviceSpawnAt) / 1000 : 0;
+    logLine(`[计时] 本轮启动耗时：总计 ${total.toFixed(1)} 秒（其中 dsh 服务 ${serviceSec.toFixed(1)} 秒，`
+      + `桌面端准备 ${(total - serviceSec).toFixed(1)} 秒）`);
+  }
   // 服务成功启动：自动修复预算已达成使命，复位以保证下次故障仍有全额自愈能力
   crashRepairBudget = 1;
   cacheRepairBudget = 2;
@@ -3176,14 +4326,14 @@ function finishBoot() {
   // 修复模式暂存的用户偏好（主题 / Agent 预设 / 版本例外）：服务已就绪、官方
   // 已重建 profile，此时合并回去最安全。
   restoreUserPrefsAfterBoot().catch(() => {});
-  serviceState.remoteControl = remoteControl;
-  serviceState.lanAddresses = remoteControl ? getLanIPv4Addresses() : [];
+  // 远程访问恒定开启：服务只监听一块具体网卡地址（有局域网 IPv4 时），
+  // 只有该地址可达，因此这里只回填当前绑定地址，不列出未绑定的网卡。
+  serviceState.lanAddresses = host === '127.0.0.1' ? [] : [host];
   logLine(`[服务] 已就绪：http://${host}:${port}（模式：${selectedMode || 'unknown'}${serviceState.devMode ? '，开发者选项模式' : ''}）`);
-  // 移动端远程控制：额外展示局域网访问地址（手机与电脑同一 Wi-Fi 时可访问）
-  if (remoteControl) {
-    const lan = getLanIPv4Addresses();
-    if (lan.length) logLine(`[服务] 移动端远程控制已开启：手机扫码或访问 http://${lan.join(' / http://')}:${port} 即可远程控制当前工作区`);
-    else logLine('[服务] 移动端远程控制已开启，但未检测到局域网 IPv4 地址（请检查网络连接）');
+  if (host !== '127.0.0.1') {
+    logLine(`[服务] 手机与电脑同一 Wi-Fi 时，访问 http://${host}:${port} 即可远程控制当前工作区`);
+  } else {
+    logLine('[服务] 本次仅本机可访问（未绑定局域网地址）');
   }
   if (serviceState.devMode) {
     logLine(`[服务] 开发者选项模式：服务端后端（PID ${serviceState.pid || '-'}）与浏览器端热更 watcher（PID ${serviceState.devWebPid || '-'}）已分离运行`);
@@ -3602,6 +4752,7 @@ function createBootWindow() {
 }
 
 async function createMainWindow() {
+  const windowStartedAt = Date.now();
   // 窗口背景色跟随主题（浅色时避免加载期闪黑）
   const resolved = resolveEffectiveTheme();
   mainWindow = new BrowserWindow({
@@ -3640,7 +4791,13 @@ async function createMainWindow() {
       logLine(`[WebUI:${lv}] ${message}${sourceId ? ` (${sourceId}:${line})` : ''}`);
     }
   });
-  mainWindow.webContents.on('did-navigate', (e, url) => logLine(`[WebUI] 已导航到 ${url}`));
+  mainWindow.webContents.on('did-navigate', (e, url) => {
+    logLine(`[WebUI] 已导航到 ${url}（窗口创建后 ${((Date.now() - windowStartedAt) / 1000).toFixed(1)} 秒）`);
+  });
+  // 首帧真正可交互的时刻（页面 DOM + 插件脚本都加载完）：这才是用户"看到界面"的时间点
+  mainWindow.webContents.on('did-finish-load', () => {
+    logLine(`[计时] 主界面加载完成：窗口创建后 ${((Date.now() - windowStartedAt) / 1000).toFixed(1)} 秒`);
+  });
   try {
     const ses = mainWindow.webContents.session;
     const wf = { urls: [`http://127.0.0.1:${port}/*`, `http://localhost:${port}/*`, `ws://127.0.0.1:${port}/*`] };
@@ -3797,9 +4954,7 @@ app.whenReady().then(() => {
   // 读取持久化的开发者选项模式开关
   developerMode = loadAppConfig().developerMode === true;
   if (developerMode) logLine('[设置] 开发者选项模式已开启（可从设置页关闭）');
-  // 读取持久化的「移动端远程控制」开关：开启后 dsh web 监听 0.0.0.0（手机扫码/局域网访问）
-  remoteControl = loadAppConfig().remoteControl === true;
-  if (remoteControl) logLine('[设置] 移动端远程控制已开启：dsh web 将监听所有网卡（0.0.0.0），重启服务后生效');
+  // 远程访问不再有开关：每次启动都由 applyRemoteBinding() 自动选一块网卡地址。
   // 主题：先以官方「生效中的主题偏好」为准对齐一次（消除 app-config 与官方 WebUI 的
   // 不一致），再应用原生层（标题栏/系统弹窗跟随）+ 监听官方设置的落点文件反向同步
   // （dsh 0.1.7 起是 profile/home 的 cordis.patch.yml，旧版是 settings.yaml）
@@ -3821,9 +4976,11 @@ app.whenReady().then(() => {
   // App 启动瞬间即自动终结旧服务（不依赖模式选择）
   cleanupOldService();
 
-  // 显示模式选择（与清理并行，互不阻塞；不再自动倒计时进入）
+  // 显示模式选择（与清理并行，互不阻塞）
   bootPhase = 'mode';
   broadcast('boot:phase', { phase: 'mode' });
+  // 老用户直接用上次的极速启动：1 秒后自动开始，不再干等点击
+  maybePrewarm();
 });
 
 // 所有窗口关闭 → 退出 App（不再常驻托盘）
@@ -3855,6 +5012,14 @@ ipcMain.handle('boot:retry', async () => {
 ipcMain.handle('boot:quit', async () => {
   await quitApp();
   return true;
+});
+
+// 端口占用询问：渲染层把用户选择（kill / switch / cancel）回传主进程
+ipcMain.handle('boot:port-conflict-decision', (_e, action) => {
+  const next = String(action || '');
+  if (!['kill', 'switch', 'cancel'].includes(next)) return { ok: false };
+  if (portDecisionResolve) portDecisionResolve(next);
+  return { ok: true };
 });
 
 
@@ -4695,8 +5860,8 @@ ipcMain.handle('settings:get', async () => {
     changelog,
     notifications: cfg.notifications !== false,
     developerMode: cfg.developerMode === true,
-    remoteControl: remoteControl,
-    lanAddresses: remoteControl ? getLanIPv4Addresses() : [],
+    // 远程访问恒定开启：只回填当前实际绑定的地址（绑定回环时列表为空）
+    lanAddresses: host === '127.0.0.1' ? [] : [host],
     serviceHost: host,
     servicePort: port,
     dshVersion: serviceState.dshVersion,
@@ -4768,20 +5933,6 @@ ipcMain.handle('settings:set-developer-mode', (e, enabled) => {
   saveAppConfig();
   logLine(`[设置] 开发者选项模式已${cfg.developerMode ? '开启' : '关闭'}（对下次启动生效）`);
   return { ok: true, developerMode: cfg.developerMode };
-});
-
-// 「移动端远程控制」开关（持久化，对下次启动生效）：
-// 开启后 dsh web 以配置层 overlay 方式监听 0.0.0.0（CLI 仍传 127.0.0.1 以绕过官方安全拒绝，
-// 实际绑定 0.0.0.0 由 --patch overlay 覆盖 webserver 行实现），手机扫码 / 局域网地址可远程
-// 控制当前工作区；关闭则仅本机（127.0.0.1）可访问。
-ipcMain.handle('settings:set-remote-control', (e, enabled) => {
-  const cfg = loadAppConfig();
-  cfg.remoteControl = !!enabled;
-  remoteControl = !!enabled;
-  saveAppConfig();
-  const lan = enabled ? getLanIPv4Addresses() : [];
-  logLine(`[设置] 移动端远程控制已${cfg.remoteControl ? '开启' : '关闭'}（重启服务后生效）${cfg.remoteControl ? `，局域网地址：${lan.join(', ') || '（未检测到）'}` : ''}`);
-  return { ok: true, remoteControl: cfg.remoteControl, lanAddresses: lan, servicePort: port };
 });
 
 // 查看日志：读取当前日志文件尾部内容 + 日志路径

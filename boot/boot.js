@@ -136,7 +136,6 @@ const sidebarRepo = document.getElementById('sidebarRepo');
 const sidebarRepoText = document.getElementById('sidebarRepoText');
 const sidebarDshVersion = document.getElementById('sidebarDshVersion');
 const setDevModeToggle = document.getElementById('setDevModeToggle');
-const setRemoteToggle = document.getElementById('setRemoteToggle');
 const setRemoteHint = document.getElementById('setRemoteHint');
 const setRemoteLanList = document.getElementById('setRemoteLanList');
 const setWorkspaceInput = document.getElementById('setWorkspaceInput');
@@ -2030,9 +2029,8 @@ const I18N = {
     setNotifications: '通知',
     setNotifyTitle: '新版本通知',
     setNotifyDesc: '发现新版本时弹出系统通知提醒',
-    setRemoteTitle: '移动端远程控制',
-    setRemoteToggleTitle: '开启移动端远程控制',
-    setRemoteToggleDesc: '开启后 dsh web 将以 --host 0.0.0.0 监听所有网卡。手机与电脑处于同一 Wi-Fi 时，扫码或在手机上打开下方地址，即可远程控制当前工作区。关闭后仅本机可访问。开关对下次启动生效。',
+    setRemoteTitle: '移动端访问',
+    setRemoteDesc: '远程访问默认开启，无需设置。服务每次启动都会自动绑定本机一块网卡的局域网 IPv4，手机与电脑处于同一 Wi-Fi 时，直接在手机上打开下方地址即可远程控制当前工作区；未检测到局域网 IPv4 时回退 127.0.0.1（仅本机可访问）。',
     setDevTitle: '开发者选项',
     setDevModeTitle: '开启开发者选项模式',
     setDevModeDesc: '选择「源码完整安装」时分离运行「服务端后端」与「浏览器端热更 watcher（pnpm dev:web）」两个进程，改动客户端插件源码后自动重建并热更。需先完成一次「源码完整安装」，开关对下次启动生效。',
@@ -2203,9 +2201,8 @@ const I18N = {
     setNotifications: 'Notifications',
     setNotifyTitle: 'New version notification',
     setNotifyDesc: 'Show a system notification when a new version is found',
-    setRemoteTitle: 'Mobile Remote Control',
-    setRemoteToggleTitle: 'Enable mobile remote control',
-    setRemoteToggleDesc: 'When enabled, dsh web listens on all interfaces (--host 0.0.0.0). When the phone and computer are on the same Wi-Fi, scan the QR code or open the address below on the phone to remotely control the current workspace. When disabled, only this computer can access. Takes effect on next launch.',
+    setRemoteTitle: 'Mobile Access',
+    setRemoteDesc: 'Remote access is always on — no setting needed. Each launch binds one local LAN IPv4 automatically; when the phone and computer share a Wi-Fi, open the address below on the phone to control this workspace. With no LAN IPv4 the service falls back to 127.0.0.1 (this computer only).',
     setDevTitle: 'Developer Options',
     setDevModeTitle: 'Enable developer options mode',
     setDevModeDesc: 'When choosing "Full Source Build", runs "service backend" and "browser hot-reload watcher (pnpm dev:web)" as two processes; changes to client plugin sources rebuild and hot-reload automatically. A "Full Source Build" must be done first. Applies on next launch.',
@@ -2443,11 +2440,8 @@ function loadSettings() {
       }
       setNotifyToggle.checked = !!cfg.notifications;
       setDevModeToggle.checked = !!cfg.developerMode;
-      // 移动端远程控制：回填开关 + 展示手机访问地址（开启且检测到局域网 IP 时）
-      if (setRemoteToggle) {
-        setRemoteToggle.checked = !!cfg.remoteControl;
-        renderRemoteLanList(!!cfg.remoteControl, cfg.lanAddresses || [], cfg.servicePort || 3080);
-      }
+      // 移动端访问：远程访问恒定开启，直接展示当前绑定的手机访问地址
+      renderRemoteLanList(cfg.lanAddresses || [], cfg.servicePort || 3080);
       // 设置页版本主体：本地安装版本（未安装则显示"未安装"）
       setDshVersion.textContent = cfg.dshVersion
         ? t('setCurrentVersion') + 'v' + cfg.dshVersion
@@ -2547,28 +2541,12 @@ setDevModeToggle.addEventListener('change', () => {
   }
 });
 
-// 移动端远程控制开关：保存设置并刷新手机访问地址展示（对下次启动生效）
-setRemoteToggle.addEventListener('change', () => {
-  if (!window.dsh || !window.dsh.setRemoteControl) return;
-  window.dsh.setRemoteControl(setRemoteToggle.checked).then((r) => {
-    if (r && r.ok) {
-      renderRemoteLanList(r.remoteControl, r.lanAddresses || [], r.servicePort || 3080, true);
-    }
-  }).catch(() => {});
-});
-
-// 渲染移动端远程控制面板的手机访问地址：
-// enabled - 开关是否开启；lan - 主进程返回的局域网 IPv4 列表；servicePort - dsh 服务端口；
-// showRestartTip - 是否附加「重启生效」提示（仅切换开关时显示）
+// 渲染「移动端访问」面板的手机访问地址。
+// lan - 主进程回填的当前绑定地址（绑定回环时为空数组）；servicePort - dsh 服务端口。
 // 说明：展示裸地址（不带 token）——dsh-mobile-remote 插件已在服务端接管 /，
 // 任何设备首次访问裸地址都会自动完成连接授权，之后长期直接使用。
-function renderRemoteLanList(enabled, lan, servicePort, showRestartTip) {
+function renderRemoteLanList(lan, servicePort) {
   if (!setRemoteHint || !setRemoteLanList) return;
-  setRemoteHint.hidden = !enabled;
-  if (!enabled) {
-    setRemoteLanList.innerHTML = '';
-    return;
-  }
   const p = servicePort || 3080;
   const urls = (Array.isArray(lan) && lan.length) ? lan.map((ip) => 'http://' + ip + ':' + p) : [];
   let html = '';
@@ -2587,15 +2565,8 @@ function renderRemoteLanList(enabled, lan, servicePort, showRestartTip) {
   } else {
     html += '<div style="color:var(--muted);font-size:12px;">' +
       (currentLanguage === 'en'
-        ? 'No LAN IPv4 address detected. Please check your network connection.'
-        : '未检测到局域网 IPv4 地址，请检查网络连接。') +
-      '</div>';
-  }
-  if (showRestartTip) {
-    html += '<div id="remoteRestartTip" style="margin-top:8px;color:var(--muted);font-size:12px;">' +
-      (currentLanguage === 'en'
-        ? 'Takes effect on next launch. To apply now, click "Restart" on the home page.'
-        : '开关对下次启动生效。如需立即生效，请在首页点击「重新运行」。') +
+        ? 'No LAN IPv4 address detected — this run serves 127.0.0.1 only. Check the network and run again.'
+        : '未检测到局域网 IPv4 地址，本次仅 127.0.0.1 可访问。请检查网络后重新运行。') +
       '</div>';
   }
   setRemoteLanList.innerHTML = html;
@@ -3163,6 +3134,109 @@ if (!window.dsh) {
 
   // 命令行日志
   window.dsh.onLog((text) => appendLog(text));
+
+  // ── 端口占用询问 ─────────────────────────────────────────────
+  // 启动时端口被占用（尤其是「疑似 dsh」的残留进程），由用户决定：
+  //   结束占用进程并继续 / 改用其它端口 / 取消启动。
+  function showPortConflictDialog(info) {
+    if (!info || document.getElementById('portConflictMask')) return;
+    const isEn = currentLanguage === 'en';
+    const items = Array.isArray(info.items) ? info.items : [];
+    const anyDsh = items.some((i) => i && i.looksLikeDsh);
+
+    const mask = document.createElement('div');
+    mask.className = 'modal-mask';
+    mask.id = 'portConflictMask';
+
+    const box = document.createElement('div');
+    box.className = 'modal';
+
+    const header = document.createElement('div');
+    header.className = 'update-modal-header';
+    const h3 = document.createElement('h3');
+    h3.style.margin = '0';
+    h3.style.fontSize = '16px';
+    h3.textContent = isEn ? 'Port in use' : '端口被占用';
+    header.appendChild(h3);
+
+    const body = document.createElement('div');
+    body.style.padding = '14px 22px 4px';
+    body.style.fontSize = '13px';
+    body.style.lineHeight = '1.7';
+
+    const tip = document.createElement('p');
+    tip.style.margin = '0 0 10px';
+    tip.textContent = anyDsh
+      ? (isEn
+        ? `A process that looks like DeepSeek Harness is using port ${info.port}. End it and start?`
+        : `当前有疑似 DeepSeek Harness 的进程正在使用端口 ${info.port}，是否要终结它？`)
+      : (isEn
+        ? `Port ${info.port} is being used by another program. How would you like to continue?`
+        : `端口 ${info.port} 正被其它程序占用，请选择如何处理：`);
+
+    const list = document.createElement('ul');
+    list.style.margin = '0 0 10px';
+    list.style.paddingLeft = '18px';
+    list.style.fontSize = '12.5px';
+    items.forEach((i) => {
+      const li = document.createElement('li');
+      const name = (i && i.name) || 'unknown';
+      const pid = i && i.pid ? i.pid : '?';
+      const tag = i && i.looksLikeDsh ? (isEn ? ' · likely dsh' : ' · 疑似 dsh') : '';
+      li.textContent = `${name}（PID ${pid}）${tag}`;
+      list.appendChild(li);
+    });
+
+    const note = document.createElement('p');
+    note.style.margin = '0';
+    note.style.fontSize = '12px';
+    note.style.opacity = '0.7';
+    note.textContent = isEn
+      ? 'Ending it will stop whatever it is running. If unsure, switch to another port instead.'
+      : '终结它会中断该进程正在运行的任务；不确定时建议改用其它端口。';
+
+    body.appendChild(tip);
+    if (items.length) body.appendChild(list);
+    body.appendChild(note);
+
+    const footer = document.createElement('div');
+    footer.style.display = 'flex';
+    footer.style.justifyContent = 'flex-end';
+    footer.style.gap = '8px';
+    footer.style.padding = '16px 22px 20px';
+
+    let decided = false;
+    const decide = async (action) => {
+      if (decided) return;
+      decided = true;
+      mask.querySelectorAll('button').forEach((b) => { b.disabled = true; });
+      try { await window.dsh.decidePortConflict(action); } catch (e) { /* ignore */ }
+      mask.remove();
+    };
+
+    const btnCancel = document.createElement('button');
+    btnCancel.className = 'btn';
+    btnCancel.textContent = isEn ? 'Cancel' : '取消启动';
+    btnCancel.onclick = () => decide('cancel');
+
+    const btnSwitch = document.createElement('button');
+    btnSwitch.className = 'btn';
+    btnSwitch.textContent = isEn ? 'Use another port' : '改用其它端口';
+    btnSwitch.onclick = () => decide('switch');
+
+    const btnKill = document.createElement('button');
+    btnKill.className = 'btn btn-danger';
+    btnKill.textContent = isEn ? 'End it and start' : '终结它并启动';
+    btnKill.onclick = () => decide('kill');
+
+    footer.append(btnCancel, btnSwitch, btnKill);
+    box.append(header, body, footer);
+    mask.appendChild(box);
+    document.body.appendChild(mask);
+    btnKill.focus();
+  }
+
+  if (window.dsh.onPortConflict) window.dsh.onPortConflict(showPortConflictDialog);
 
   // 错误状态：提示用户选择修复
   window.dsh.onStatus(({ phase, message, crashCode }) => {
