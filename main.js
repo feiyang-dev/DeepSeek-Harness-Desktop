@@ -1941,11 +1941,17 @@ function selectMode(mode, opts) {
   // 预热期间用户点击：同一模式直接接续，不同模式先停掉预热
   if (prewarmTimer) { clearTimeout(prewarmTimer); prewarmTimer = null; }
   if (prewarmed && !byPrewarm) {
-    if (selectedMode === mode) {
+    // 只有服务仍在真实进行中（启动中/已就绪）时，点击同一模式才「直接接续」。
+    // 若服务已经停止、出错、或回到模式页（典型：用户清除了本地运行环境后），
+    // 预热早已失效、服务已不存在，此时必须按用户点击重新启动，否则会永远卡在
+    // 「继续正在进行的启动」却什么都不做（服务已被删，起不来）。
+    const stillStarting = bootPhase === 'detect' || bootPhase === 'install' ||
+      bootPhase === 'start' || bootPhase === 'ready' || bootPhase === 'running';
+    if (selectedMode === mode && stillStarting) {
       logLine('[预热] 用户选择了同一个模式，继续正在进行的启动');
       return;
     }
-    logLine(`[预热] 用户改选「${modeLabel(mode)}」，停止预热中的服务并重新开始`);
+    logLine(`[预热] 预热已失效（当前阶段 ${bootPhase}），按用户选择重新启动「${modeLabel(mode)}」`);
     prewarmed = false;
     bootPhase = 'mode';
     selectedMode = null;
@@ -4629,6 +4635,15 @@ async function clearLocalRuntime() {
   serviceState.dshVersion = null;
   serviceState.localUpdate = null;
   serviceState.mode = null;
+  // 关键：同步重置预热与已选模式，否则清除后点击「极速启动」会被 selectMode 的
+  // 预热保护分支拦截（prewarmed=true 且 selectedMode='local' → 直接 return 不启动）。
+  prewarmed = false;
+  selectedMode = null;
+  // 同时清除「上次模式」记忆：清除运行环境是彻底重置，下次启动不应再自动预热旧模式
+  try {
+    const cfg = loadAppConfig();
+    if (cfg.lastMode) { cfg.lastMode = null; saveAppConfig(); }
+  } catch (e) { /* ignore */ }
   stopInstallTicker();
   // 明确广播「已停止」阶段：清除流程把 bootPhase 置为 install（进度事件），
   // 若不广播，前端 currentPhase 会停留在 install，导致离开首页再回来时
@@ -4667,6 +4682,9 @@ async function stopService() {
   // 兜底：端口上若仍有残留进程一并终止
   if (isWin) await killProcessOnPort(port);
   onServiceExited();
+  // 停止后预热状态失效：否则 prewarmed 残留，用户停止后重新点模式会被误判为
+  // 「继续正在进行的启动」而直接 return（同 clearLocalRuntime 的根因）。
+  prewarmed = false;
   bootPhase = 'stopped';
   logLine('[服务] 已停止');
   broadcast('boot:phase', { phase: 'stopped' });
