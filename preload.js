@@ -15,6 +15,8 @@ contextBridge.exposeInMainWorld('dsh', {
 
   // ---- 模式选择 ----
   selectMode: (mode) => ipcRenderer.invoke('boot:select-mode', mode),
+  // 取消正在进行的启动 / 安装（中止并回到模式选择页，不退出应用）
+  cancelStartup: () => ipcRenderer.invoke('boot:cancel-startup'),
   // 倒计时事件（已停用自动进入，保留通道兼容）
   onModeCountdown: (cb) => {
     const listener = (_e, d) => cb(d);
@@ -113,6 +115,8 @@ contextBridge.exposeInMainWorld('dsh', {
   },
   // 开发者选项模式开关（对下次启动生效）
   setDeveloperMode: (enabled) => ipcRenderer.invoke('settings:set-developer-mode', enabled),
+  // 打开应用时自动启动服务开关（持久化，对下次启动生效；默认关闭）
+  setAutoStartOnLaunch: (enabled) => ipcRenderer.invoke('settings:set-auto-start', enabled),
   // 查看日志：读取最近日志内容（{ ok, content, file, logDir }）
   getLogs: () => ipcRenderer.invoke('settings:get-logs'),
   // 打开日志文件（系统默认文本编辑器）

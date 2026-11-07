@@ -486,6 +486,9 @@ let quitting = false;
 let developerMode = false;      // 开发者选项模式（设置中持久化，对下次启动生效）
 let bootPhase = 'init';         // mode / detect / install / start / running / stopped / error
 let bootProgressPercent = 0;    // 最近一次广播的启动进度百分比
+// 「取消启动」：用户点进度页「取消操作」时置位，用于中止安装子进程并让 run() 静默退出
+let startupCancelRequested = false;
+let currentStartupChild = null; // 启动/安装阶段正在运行的子进程（pnpm / npm），取消时终止
 let symlinkHealed = false;      // .dsh/profiles symlink 是否已自动修复过（防无限重启）
 // npx 缓存自动修复预算（模块级，跨 startWebViaNpx 递归调用共享，防无限重启）。
 // 两类问题独立计数：原生崩溃重下也救不了 ABI 不兼容，只修 1 次；
@@ -516,6 +519,12 @@ const serviceState = {
   localUpdate: null,   // 离线启动模式检测到官方新版：{ latest, next, current }，无则 null
   lanAddresses: [],    // 当前绑定的局域网 IPv4（手机访问用；绑定回环时为空）
 };
+
+// 「本地运行环境更新中」状态：由【主进程】维护（不是前端内存变量），
+// 并通过 service:get-state 返回给前端。用户更新时切走页面再回首页，
+// 前端据此恢复更新进度页；否则当服务仍在运行（快速/源码模式不中断服务）时，
+// 会被 openHomePage 的 st.running 判断拉回「正在运行中」控制台，看起来像"更新状态没了"。
+let localRuntimeUpdate = null; // { tag, startedAt, percent, text, detail, stage } | null
 
 // ============================================================
 //  IPC：进度 & 状态 & 日志
@@ -703,6 +712,14 @@ function setProgress(percent, stage, text, detail, hint) {
     startInstallTicker();
   } else if (stage !== 'install') {
     stopInstallTicker();
+  }
+  // 更新本地运行环境期间：把最新进度同步到主进程状态里，
+  // 供用户切走页面再回首页时恢复（前端不再只依赖内存里的 DOM 状态）。
+  if (localRuntimeUpdate) {
+    localRuntimeUpdate.percent = effective;
+    localRuntimeUpdate.stage = stage;
+    if (text) localRuntimeUpdate.text = text;
+    localRuntimeUpdate.detail = detail || '';
   }
   broadcast('boot:progress', {
     percent: effective,
@@ -1103,6 +1120,12 @@ function collectOfficialStartupDiagnostics(windowMs) {
 // 启动失败：透传可选的崩溃码，前端据此展示针对性修复建议
 // reportCode：上报到服务端时使用的错误分类（便于后台按类型聚合）
 function bootError(message, crashCode, reportCode) {
+  // 用户主动取消启动：取消不是故障 —— 不展示错误、不上报、不把阶段改成 error，
+  // 直接静默退出（界面已由 cancelStartup 切回模式选择页）。
+  if (startupCancelRequested) {
+    logLine('[取消] 已取消本次启动，忽略后续错误：' + message);
+    return;
+  }
   bootPhase = 'error';
   stopInstallTicker();
   logLine(`[错误] ${message}`);
@@ -1753,6 +1776,10 @@ function runCommand(exe, args, opts, onOut) {
       ...spawnOpts,
     });
     if (onSpawned) onSpawned(child);
+    // 启动/安装阶段跟踪子进程：用户点「取消操作」时据此立即终止
+    if (bootPhase === 'detect' || bootPhase === 'install' || bootPhase === 'start') {
+      currentStartupChild = child;
+    }
     let out = '';
     let idleTimer = null;
     let killTimer = null;
@@ -1760,6 +1787,7 @@ function runCommand(exe, args, opts, onOut) {
     const finish = (result) => {
       if (settled) return;
       settled = true;
+      if (currentStartupChild === child) currentStartupChild = null;
       if (idleTimer) clearTimeout(idleTimer);
       if (killTimer) clearTimeout(killTimer);
       resolve(result);
@@ -1920,6 +1948,12 @@ function modeLabel(mode) {
 // 进入模式页后自动预热：只预热极速启动（源码/修复依赖多、误触发代价大）
 function maybePrewarm() {
   if (selectedMode || bootPhase !== 'mode') return;
+  // 设置项：打开应用时是否自动启动服务。默认关闭 —— 关闭时停在模式选择页，
+  // 由用户手动选择模式（不再"一开 app 就自己加载"）。
+  if (loadAppConfig().autoStartOnLaunch !== true) {
+    logLine('[预热] 设置中未开启「打开应用时自动启动服务」，停留在模式选择页');
+    return;
+  }
   // 老用户没有 lastMode 记录：只要本地环境已就绪，就按「极速启动」视为其常用模式
   const last = loadAppConfig().lastMode || (localDshEntry() ? 'local' : null);
   if (last !== 'local') return;
@@ -1937,6 +1971,11 @@ function maybePrewarm() {
 }
 
 function selectMode(mode, opts) {
+  // 更新本地运行环境进行中：禁止同时启动服务（会与 pnpm 安装抢同一个 dsh-local 目录）
+  if (localRuntimeUpdate) {
+    logLine('[模式] 正在更新本地运行环境，暂不启动服务，请稍候');
+    return;
+  }
   const byPrewarm = !!(opts && opts.prewarming);
   // 预热期间用户点击：同一模式直接接续，不同模式先停掉预热
   if (prewarmTimer) { clearTimeout(prewarmTimer); prewarmTimer = null; }
@@ -2571,6 +2610,7 @@ function officialRecoveryProfiles(profilesDir) {
 }
 
 async function repairFlow() {
+  if (startupCancelRequested) return { ok: false, error: 'cancelled' };
   // 1) 停止可能正在运行的 dsh 服务（本 App 启动的 + 端口上残留的旧服务）+ 开发者模式 watcher
   setProgress(15, 'install', '正在停止正在运行的 dsh 服务...');
   if (serverProc) await stopWebService();
@@ -2695,6 +2735,7 @@ async function findPnpmCli() {
 // 确保 pnpm 可用：定位 pnpm.cjs 入口；缺失则用 npm 全局安装一次。
 // 返回 pnpm.cjs 绝对路径，失败返回 null。
 async function ensurePnpmCli(nodeExe, npmCli) {
+  if (startupCancelRequested) return null;
   const existing = await findPnpmCli();
   if (existing) return existing;
   logLine('[安装] 未检测到 pnpm，正在安装 pnpm（用于快速安装 dsh）...');
@@ -2757,6 +2798,7 @@ async function runPnpmInstallSelfHealing(nodeExe, pnpmCli, spec, dir, env) {
 }
 
 async function sourceInstall(nodeExe) {
+  if (startupCancelRequested) return { ok: false, error: 'cancelled' };
   // 1) 检测 git / pnpm（git 缺失时自动安装官方 Git for Windows）
   setProgress(30, 'install', '正在检测 git 与 pnpm...');
   let gitPath = await findGitExe();
@@ -3019,6 +3061,7 @@ function loosenLocalDshSpec(dir, tag) {
 // 离线启动：确保本地已安装 dsh（<userData>/dsh-local），不存在则用 npm 安装一次。
 // 返回 { ok, entry }；entry 为本地 dsh bin 入口绝对路径。
 async function localInstall(nodeExe, npmCli) {
+  if (startupCancelRequested) return { ok: false, error: 'cancelled' };
   setProgress(25, 'install', '正在检查本地运行环境...');
   const existing = localDshEntry();
   if (existing) {
@@ -4088,6 +4131,8 @@ async function run() {
   // 新一次启动：清空上一次的官方诊断记录（避免把旧故障带到本次错误提示里）
   startupDiagnostics.length = 0;
   pluginCompatWarned = false;
+  // 新一轮启动：清除上一次「取消启动」的标记
+  startupCancelRequested = false;
 
   // 启动自检（自动化总入口）：插件侧已知修正 + 错位备份归位 + 残留清理。
   // 必须在任何 dsh 进程 spawn 之前执行，插件修正才会在本次启动生效；全部幂等。
@@ -4148,6 +4193,7 @@ async function run() {
   }
   // 端口最终裁决：弹窗询问用户（结束占用进程 / 改用其它端口 / 取消启动）
   const usablePort = await ensureUsablePort();
+  if (startupCancelRequested) return; // 用户点了「取消操作」：静默退出
   if (usablePort == null) return; // 用户选择取消启动，bootError 已在内部处理
   logLine(`[计时] 端口就绪：+${((Date.now() - bootStartedAt) / 1000).toFixed(1)} 秒`);
   // 镜像测速在后台已经跑完（与上面的端口检查并行），这里只等结果，不再串行等一遍
@@ -4157,6 +4203,7 @@ async function run() {
   //    不再只给官网链接把用户推向"修复模式"形成引导死循环。
   setProgress(8, 'detect', '正在检测 Node.js 运行环境...');
   let nodeExe = await findNodeExe();
+  if (startupCancelRequested) return; // 用户取消启动：静默退出
   if (!nodeExe) {
     const installed = await installNodeOfficial();
     nodeExe = installed ? (await findNodeExe()) : null;
@@ -4191,6 +4238,7 @@ async function run() {
       return;
     }
     const r = await repairFlow();
+    if (startupCancelRequested) return; // 用户取消启动：静默退出
     if (!r.ok) { bootError(r.error); return; }
     const pnpmCli = await ensurePnpmCli(nodeExe, npmCli);
     if (!pnpmCli) {
@@ -4215,6 +4263,7 @@ async function run() {
         return;
       }
       const r = await localInstall(nodeExe, npmCli);
+      if (startupCancelRequested) return; // 用户取消启动：静默退出
       if (!r.ok) { bootError(r.error); return; }
       setProgress(80, 'start', '正在启动本地 dsh 服务（极速模式）...');
       localStartWeb(nodeExe, r.entry);
@@ -4228,6 +4277,7 @@ async function run() {
       return;
     }
     const r = await sourceInstall(nodeExe, npmCli);
+    if (startupCancelRequested) return; // 用户取消启动：静默退出
     if (!r.ok) { bootError(r.error); return; }
     setProgress(60, 'start', '正在启动 DeepSeek Harness 服务（pnpm dsh web）...');
     sourceStartWeb(r.repoPath, nodeExe, r.pnpmCli);
@@ -4292,7 +4342,8 @@ async function run() {
       hint: copy.hint || '',
       step: resolveStep(shown),
     });
-  }, () => bootPhase === 'error');
+  }, () => bootPhase === 'error' || startupCancelRequested);
+  if (startupCancelRequested) return; // 用户取消启动：静默退出（界面已回到模式选择）
   if (bootPhase === 'error') return; // 子进程已退出并报错，交给错误界面处理
   if (!ready) {
     // 官方 0.1.7 会分类报错并落盘完整诊断；若我们已识别到已知信号，直接把指引带上
@@ -4495,11 +4546,27 @@ async function updateLocalDsh(tag) {
   if (!localDshEntry()) {
     return { ok: false, error: '本地运行环境尚未安装，请先选择「极速启动」完成安装' };
   }
+  // 启动流程进行中（检测 / 安装 / 启动 / 就绪）：禁止同时更新。
+  // 否则 run() 的依赖安装与更新流程会同时操作同一个 dsh-local 目录，互相抢文件句柄。
+  if (bootPhase === 'detect' || bootPhase === 'install' || bootPhase === 'start' || bootPhase === 'ready') {
+    logLine(`[更新] 服务正在启动中（阶段 ${bootPhase}），已拒绝本次更新`);
+    return { ok: false, error: '服务正在启动中，请等启动完成（或先「停止运行」）后再更新运行环境' };
+  }
   const wasRunning = !!serviceState.running;
   const wasLocalMode = serviceState.mode === 'local';
   logLine(`[更新] 开始更新本地运行环境到${channelName}（@${isNext ? 'next' : 'latest'}）...`);
   // 记录更新开始时间：进度页实时显示"已进行 X 分 Y 秒"
   installStageStartedAt = Date.now();
+  // 标记「更新进行中」：写入主进程状态（跨页面可恢复），所有返回路径统一清空
+  localRuntimeUpdate = {
+    tag,
+    startedAt: Date.now(),
+    percent: 0,
+    stage: 'install',
+    text: '正在更新本地运行环境...',
+    detail: '',
+  };
+  const finishUpdate = (res) => { localRuntimeUpdate = null; return res; };
   try {
     // 1) 安装前先清理所有残留的 dsh 进程（"更新卡死 20 分钟"的根因修复）：
     //    上次以 npx 快速版 / 源码版启动、或未正常退出的旧 node 进程，会占用
@@ -4524,12 +4591,12 @@ async function updateLocalDsh(tag) {
   const npmCli = await findNpmCli();
   if (!nodeExe || !npmCli) {
     bootError('未检测到 npm，无法更新本地运行环境。请先安装 Node.js（含 npm）后重试。');
-    return { ok: false, error: '未检测到 npm' };
+    return finishUpdate({ ok: false, error: '未检测到 npm' });
   }
   const pnpmCli = await ensurePnpmCli(nodeExe, npmCli);
   if (!pnpmCli) {
     bootError('pnpm 安装失败，无法更新本地运行环境。请手动执行 npm install -g pnpm 后重试。');
-    return { ok: false, error: 'pnpm 安装失败' };
+    return finishUpdate({ ok: false, error: 'pnpm 安装失败' });
   }
   setProgress(35, 'install', '正在下载并安装最新版运行环境...',
     `正在更新 @deepseek-ai/dsh 到官方${channelName}（@${isNext ? 'next' : 'latest'}）`, '更新完成后服务会自动重新启动，请耐心等待');
@@ -4547,14 +4614,18 @@ async function updateLocalDsh(tag) {
   const installSpec = target ? `${PKG_NAME}@${target}` : (isNext ? `${PKG_NAME}@next` : `${PKG_NAME}@latest`);
   // pnpm add 安装（自带镜像切换自愈）
   const r = await runPnpmInstallSelfHealing(nodeExe, pnpmCli, installSpec, dir, env);
+  if (startupCancelRequested) {
+    // 用户点「取消操作」中止了更新：不当成失败，返回 cancelled 让前端安静收尾
+    return finishUpdate({ ok: false, cancelled: true, error: '已取消更新' });
+  }
   if (r.code !== 0) {
     bootError('本地运行环境更新失败，请查看日志后重试。');
-    return { ok: false, error: '更新失败，请查看日志' };
+    return finishUpdate({ ok: false, error: '更新失败，请查看日志' });
   }
   const entry = localDshEntry();
   if (!entry) {
     bootError('本地运行环境更新完成但入口异常，请重新选择「极速启动」重试。');
-    return { ok: false, error: '更新完成但入口异常' };
+    return finishUpdate({ ok: false, error: '更新完成但入口异常' });
   }
   // 3) 清除更新标记与旧版本号
   serviceState.dshVersion = null;
@@ -4563,12 +4634,12 @@ async function updateLocalDsh(tag) {
     // 原服务以极速启动模式运行：自动重新启动
     logLine('[更新] 本地运行环境更新完成，正在自动重新启动服务...');
     run();
-    return { ok: true, restarted: true };
+    return finishUpdate({ ok: true, restarted: true });
   }
   if (wasRunning) {
     // 非本地模式（快速 / 源码）运行中：本地运行环境已更新，当前服务不受影响
     logLine('[更新] 本地运行环境更新完成（当前服务运行不受影响，下次「极速启动」自动使用新版）');
-    return { ok: true, restarted: false };
+    return finishUpdate({ ok: true, restarted: false });
   }
   // 服务未运行：更新完成后直接以「极速启动」把服务启动起来。
   // 只弹"请自行重新运行"的提示是不够的：若本次会话从未选过启动模式
@@ -4578,7 +4649,7 @@ async function updateLocalDsh(tag) {
   selectedMode = 'local';
   logLine('[更新] 本地运行环境更新完成，正在以「极速启动」启动服务...');
   run();
-  return { ok: true, restarted: true };
+  return finishUpdate({ ok: true, restarted: true });
 }
 
 // 删除本地运行环境目录（pnpm 的 node_modules 含大量 junction 符号链接与数百 MB 小文件）。
@@ -4673,6 +4744,46 @@ function showMainWindow() {
   });
 }
 
+// 取消启动：终止安装子进程 → 释放端口 → 回到模式选择页（不退出应用）。
+// 与「停止运行」的区别：停止针对已启动的服务；取消针对正在进行的启动/安装流程。
+async function cancelStartup() {
+  const inStartup = bootPhase === 'detect' || bootPhase === 'install' ||
+    bootPhase === 'start' || bootPhase === 'ready';
+  if (!inStartup) {
+    logLine(`[取消] 当前阶段 ${bootPhase} 没有可取消的启动`);
+    return { ok: false, message: '当前没有正在进行的启动' };
+  }
+  startupCancelRequested = true;
+  logLine('[取消] 用户取消了本次启动，正在终止安装进程并返回模式选择');
+  // 1) 终止安装子进程（Windows 下需杀进程树：pnpm 会派生子进程）
+  const child = currentStartupChild;
+  currentStartupChild = null;
+  if (child) {
+    try {
+      if (isWin) {
+        execFile('taskkill', ['/pid', String(child.pid), '/t', '/f'], { windowsHide: true }, () => {});
+      } else {
+        child.kill('SIGTERM');
+      }
+    } catch (e) { /* ignore */ }
+  }
+  // 2) 停掉可能已拉起的服务、清理端口残留
+  try { await stopWebService(); } catch (e) { /* ignore */ }
+  if (isWin) { try { await killProcessOnPort(port); } catch (e) { /* ignore */ } }
+  try { onServiceExited(); } catch (e) { /* ignore */ }
+  // 3) 回到模式选择页
+  // 若取消的是「更新本地运行环境」，同时清掉更新状态（否则前端会一直显示"正在更新"）
+  localRuntimeUpdate = null;
+  stopInstallTicker();
+  resetProgress();
+  prewarmed = false;
+  selectedMode = null;
+  bootPhase = 'mode';
+  broadcast('boot:phase', { phase: 'mode' });
+  refreshTrayMenu();
+  return { ok: true };
+}
+
 // 停止服务：终止子进程 → 关闭 WebUI 主窗口 → 首页显示"已停止"
 async function stopService() {
   if (bootPhase === 'stopped') return;
@@ -4733,6 +4844,40 @@ async function restartService() {
 // ============================================================
 //  窗口 / 托盘
 // ============================================================
+
+// 选中文字 / 输入框的右键菜单（复制 / 粘贴 / 剪切 / 全选）。
+// Electron 在 Windows 上默认不提供原生右键菜单：官方 WebUI 里选中文字后既没有
+// 「复制」，输入框里也没有「粘贴」，与浏览器体验不一致。这里给每个窗口挂一个
+// 「范围最小」的菜单：有选区才给复制/全选，可编辑才给剪切/粘贴，空白处不弹，
+// 尽量不干扰页面自身的右键逻辑。
+function attachEditContextMenu(wc) {
+  if (!wc) return;
+  wc.on('context-menu', (event, params) => {
+    const sel = String(params.selectionText || '').trim();
+    const editable = !!params.isEditable;
+    const flags = params.editFlags || {};
+    const isEn = loadAppConfig().language === 'en';
+    const L = {
+      cut: isEn ? 'Cut' : '剪切',
+      copy: isEn ? 'Copy' : '复制',
+      paste: isEn ? 'Paste' : '粘贴',
+      selectAll: isEn ? 'Select All' : '全选',
+    };
+    const items = [];
+    if (editable && flags.canCut) items.push({ label: L.cut, click: () => { try { wc.cut(); } catch (e) {} } });
+    if (sel || (editable && flags.canCopy)) items.push({ label: L.copy, click: () => { try { wc.copy(); } catch (e) {} } });
+    if (editable && flags.canPaste) items.push({ label: L.paste, click: () => { try { wc.paste(); } catch (e) {} } });
+    if (flags.canSelectAll || sel) {
+      if (items.length) items.push({ type: 'separator' });
+      items.push({ label: L.selectAll, click: () => { try { wc.selectAll(); } catch (e) {} } });
+    }
+    // 空白处（无选区、不可编辑）：不弹，交还给页面自身逻辑
+    if (!items.length) return;
+    const win = BrowserWindow.fromWebContents(wc);
+    Menu.buildFromTemplate(items).popup({ window: win || undefined });
+  });
+}
+
 function createBootWindow() {
   // 窗口背景色跟随主题，避免切换/加载时闪白
   const resolved = resolveEffectiveTheme();
@@ -4754,6 +4899,8 @@ function createBootWindow() {
     },
   });
   bootWindow.loadFile(path.join(__dirname, 'boot', 'boot.html'));
+  // 控制面板同样支持选中文字复制 / 输入框粘贴
+  attachEditContextMenu(bootWindow.webContents);
   // 外部链接（如更新日志中的链接）用系统默认浏览器打开，禁止在应用内新开窗口
   bootWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http')) shell.openExternal(url);
@@ -4794,6 +4941,8 @@ async function createMainWindow() {
     },
   });
   const winRef = mainWindow;
+  // 官方 WebUI 的选中文字 / 输入框右键菜单（复制 / 粘贴 / 剪切 / 全选）
+  attachEditContextMenu(mainWindow.webContents);
   mainWindow.webContents.on('did-fail-load', (e, code, desc, url) => {
     logLine(`[诊断] 主界面加载失败 (${code}) ${desc} ${url}`);
   });
@@ -5019,6 +5168,11 @@ ipcMain.handle('boot:select-mode', (e, mode) => {
   return true;
 });
 
+// 取消正在进行的启动 / 安装（不退出应用，回到模式选择页）
+ipcMain.handle('boot:cancel-startup', async () => {
+  return await cancelStartup();
+});
+
 ipcMain.handle('boot:retry', async () => {
   if (bootPhase === 'error') {
     selectedMode = null;
@@ -5045,7 +5199,23 @@ ipcMain.handle('boot:port-conflict-decision', (_e, action) => {
 //  服务控制 IPC（首页"正在运行中"控制台）
 // ============================================================
 ipcMain.handle('service:get-state', async () => {
-  return { phase: bootPhase, ...serviceState };
+  return {
+    phase: bootPhase,
+    // 更新本地运行环境进行中：前端据此恢复更新进度页。
+    // 必须有这一项：快速 / 源码模式更新时服务不会被停止，st.running 仍为 true，
+    // 前端如果只按 running 判断，会把界面拉回「正在运行中」，更新进度看起来就"没了"。
+    updating: localRuntimeUpdate
+      ? {
+          tag: localRuntimeUpdate.tag,
+          startedAt: localRuntimeUpdate.startedAt,
+          percent: localRuntimeUpdate.percent,
+          stage: localRuntimeUpdate.stage,
+          text: localRuntimeUpdate.text,
+          detail: localRuntimeUpdate.detail,
+        }
+      : null,
+    ...serviceState,
+  };
 });
 
 // 插件数据桥接（只读快照）：服务运行期间从已安装插件拉取
@@ -5185,6 +5355,11 @@ function loadAppConfig() {
   }
   if (typeof appConfig.developerMode !== 'boolean') {
     appConfig.developerMode = false;
+    saveAppConfig();
+  }
+  // 打开应用时是否自动启动服务（默认关闭：停留在模式选择页，由用户手动点）
+  if (typeof appConfig.autoStartOnLaunch !== 'boolean') {
+    appConfig.autoStartOnLaunch = false;
     saveAppConfig();
   }
   // 界面主题：'dark' | 'light' | 'system'（默认 system，跟随系统）
@@ -5878,6 +6053,7 @@ ipcMain.handle('settings:get', async () => {
     changelog,
     notifications: cfg.notifications !== false,
     developerMode: cfg.developerMode === true,
+    autoStartOnLaunch: cfg.autoStartOnLaunch === true,
     // 远程访问恒定开启：只回填当前实际绑定的地址（绑定回环时列表为空）
     lanAddresses: host === '127.0.0.1' ? [] : [host],
     serviceHost: host,
@@ -5941,6 +6117,15 @@ ipcMain.handle('settings:set-notifications', (e, enabled) => {
   cfg.notifications = !!enabled;
   saveAppConfig();
   return { ok: true, notifications: cfg.notifications };
+});
+
+// 打开应用时自动启动服务开关（持久化，对下次启动生效；默认关闭）
+ipcMain.handle('settings:set-auto-start', (e, enabled) => {
+  const cfg = loadAppConfig();
+  cfg.autoStartOnLaunch = !!enabled;
+  saveAppConfig();
+  logLine(`[设置] 打开应用时自动启动服务已${cfg.autoStartOnLaunch ? '开启' : '关闭'}（对下次启动生效）`);
+  return { ok: true, autoStartOnLaunch: cfg.autoStartOnLaunch };
 });
 
 // 开发者选项模式开关（持久化，对下次启动生效）

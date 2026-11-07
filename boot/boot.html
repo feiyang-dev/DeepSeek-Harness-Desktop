@@ -61,6 +61,14 @@
           <span class="sidebar-update-version" id="sidebarUpdateEntryVersion"></span>
           <span class="sidebar-update-action" id="sidebarUpdateEntryAction" data-i18n="sidebarUpdateNow">立即更新</span>
         </button>
+        <!-- dsh 运行环境有新版本时的入口（与上面的「客户端自身更新」分开）：
+             点击直达「设置 → 运行环境（dsh）」手动更新 -->
+        <button class="sidebar-update" id="sidebarDshUpdateEntry" hidden title="dsh 运行环境有新版本">
+          <span class="sidebar-update-dot"></span>
+          <span class="sidebar-update-label" id="sidebarDshUpdateLabel" data-i18n="sidebarDshUpdateNew">dsh 有新版本</span>
+          <span class="sidebar-update-version" id="sidebarDshUpdateVersion"></span>
+          <span class="sidebar-update-action" id="sidebarDshUpdateAction" data-i18n="sidebarDshUpdateGo">前往更新</span>
+        </button>
         <div class="sidebar-actions">
           <button class="sidebar-action" id="sidebarLangBtn" title="切换语言 / Switch Language">
             <span class="sidebar-action-icon">
@@ -474,6 +482,21 @@
               </div>
               <label class="settings-switch">
                 <input type="checkbox" id="setNotifyToggle" />
+                <span class="slider"></span>
+              </label>
+            </div>
+          </section>
+
+          <!-- 启动行为 -->
+          <section class="panel">
+            <div class="panel-title" data-i18n="setStartupTitle">启动</div>
+            <div class="settings-row">
+              <div class="settings-row-text">
+                <div data-i18n="setAutoStartTitle">打开应用时自动启动服务</div>
+                <div class="settings-desc" data-i18n="setAutoStartDesc">开启后，打开客户端会按上次使用的模式（极速启动）自动开始加载，无需再点一次；关闭时停留在模式选择页，由你手动选择。默认关闭。</div>
+              </div>
+              <label class="settings-switch">
+                <input type="checkbox" id="setAutoStartToggle" />
                 <span class="slider"></span>
               </label>
             </div>
